@@ -1,3 +1,20 @@
+0.04 to 0.05
+------------
+
+This release is mostly about stability:
+
+* Updated interface scripts so they recover nicely if required modules are
+  missing.
+
+* Similarly, cleaned up the toolkit import scripts to recover cleanly.
+
+* Cleaned up perl eval code so errors are recovered from gracefully.  This,
+  Snap no longer crashes when you try to call an undefined function from /eval.
+
+
+===============================================================================
+
+
 0.03 to 0.04
 ------------
 

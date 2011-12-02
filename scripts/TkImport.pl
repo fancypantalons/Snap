@@ -7,24 +7,44 @@
 
 use SnapLib::HandleWrapper;
 
-if (tied %handles)
-{
-  print "Unable to load Tk Import module... existing wrapper detected!\n";
-  return 1;  
-}
-
 my $VERSION = "0.01";
 
 BEGIN
 {
-  eval "use Tk";
+  if (tied %handles)
+    {
+      $SUCCESS = 0;
+      return 1;  
+    }
+
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+
+  eval 
+    { 
+      require Tk; 
+      import Tk; 
+    };
+
+  $SIG{__DIE__} = $oh;
+
 
   if ($@)
     {
       print "Error, unable to load Tk Import module...\n";
+
+      $SUCCESS = 0;
+
       return 1;
     }
+  else
+    {
+      $SUCCESS = 1;
+    }
 }
+
+return if (! $SUCCESS);
 
 $TK_ENABLED = 1;
 

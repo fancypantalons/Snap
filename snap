@@ -503,9 +503,14 @@ sub eval_file
     }
 
   no strict;
-  eval $cmd;
 
-  print "$@\n" if ($@);
+  my $old_handler = $SIG{__DIE__};
+  
+  $SIG{__DIE__} = sub { return; };
+  eval $cmd;
+  $SIG{__DIE__} = $old_handler;
+
+  print "$filename: $@\n" if ($@);
 }
 
 ######################### Napster Initialization #######################
@@ -514,9 +519,9 @@ sub setup_new_connection
 {
   if (defined $napster_sock)
     {
-      $napster_sock->close();
       delete $handles{$napster_sock};
-    }
+      $napster_sock->close();
+    } 
 
   $napster_sock = SnapLib::NapSocket->new($metaserver, $metaport,
 				       $host[0], $host[1], $REDIAL_DELAY);
@@ -2292,9 +2297,14 @@ sub do_eval
   else  
     {
       my $cmd = join(" ", $param_str);
+      my $old_handler = $SIG{__DIE__};
+
+      $SIG{__DIE__} = sub { return; };
 
       eval "$cmd";
-      
+
+      $SIG{__DIE__} = $old_handler;
+
       if (defined $@)
         {
 	  print "$@";
@@ -2311,6 +2321,7 @@ sub do_reconnect
   $host[1] = $2;
 
   setup_new_connection();
+  login_to_napster($napster_sock);
 }
 
 sub do_list_channels

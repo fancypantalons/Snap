@@ -113,7 +113,13 @@ sub eval_perl_code
 
   $text = $textbox->get_chars(0, $textbox->get_length);
 
+  my $old_handler = $SIG{__DIE__};
+  
+  $SIG{__DIE__} = sub { return; };  
+
   eval $text;
+
+  $SIG{__DIE__} = $old_handler;
 
   print STDERR $@;
 }

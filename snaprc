@@ -12,8 +12,9 @@ my $SNAP_HOME = "$ENV{HOME}/snap";
 
 # Load interface script(s).
 
-# eval_file('Gtk.pl');
-# eval_file('Curses.pl');
+eval_file('Gtk.pl');
+# eval_file('Tk.pl');
+eval_file('Curses.pl');
 eval_file('Plain.pl');
 
 #
@@ -95,4 +96,5 @@ sub startup_code
   # eval_file(), like "/eval", obeys the SCRIPT_PATH variable.
 
   # eval_file("remote.pl");
+  # eval_file("sock.pl");
 }

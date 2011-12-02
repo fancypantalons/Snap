@@ -16,30 +16,59 @@
 
 my $VERSION = "0.04";
 
-if ((defined $INTERFACE) || ($daemon)) { return 1; }
-
 BEGIN
 {
+  if ((defined $INTERFACE) || ($daemon)) { $SUCCESS = 0; return 1; }
+
   foreach (@SCRIPT_PATH)
     {
       push @INC, "$_/GtkLib";
     }
 
   if (! $GTK_ENABLED)
-  {
-    eval_file("GtkImport.pl");
-  }
+    {
+      eval_file("GtkImport.pl");
+    }
+
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+
+  eval
+    {
+      require GtkTextPrinter;
+      import GtkTextPrinter;
+
+      require GtkInput;
+      import GtkInput;
+
+      require SnapLib::MessageTypes;
+      import SnapLib::MessageTypes;
+    };
+
+  $SIG{__DIE__} = $oh;
+
+  if ($@)
+    {
+      print "Error, unable to load Gtk module...\n";
+
+      $SUCCESS = 0;
+
+      return 1;
+    }
+  else
+    {
+      $SUCCESS = 1;
+    }
 }
+
+return if (! $SUCCESS);
       
 if (! $GTK_ENABLED)
 {
   print "Gtk Import Module not loaded!\n";
   return 1;
 }
-
-use GtkTextPrinter;
-use GtkInput;
-use SnapLib::MessageTypes;
 
 $INTERFACE = 1;
 

@@ -2,28 +2,52 @@
 # Curses interface module.
 #
 
-if ((defined $INTERFACE) || ($daemon)) { return 1; }
-
 my $VERSION = "0.01";
+my $FAILED = 0;
 
 BEGIN
 {
+  if ((defined $INTERFACE) || ($daemon)) 
+    { 
+      $SUCCESS = 0; return 1; 
+    }
+
   foreach (@SCRIPT_PATH)
     {
       push @INC, "$_/CursesLib";
     }
 
-  eval { require Curses; import Curses };
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+  eval 
+    { 
+      require Curses; 
+      import Curses 
+
+      require Window;
+      import Window;
+
+      require InputLine;
+      import InputLine;
+    };
+
+  $SIG{__DIE__} = $oh;
 
   if ($@)
     {
       print "Error, unable to load Curses module...\n";
+
+      $SUCCESS = 0;
       return;
+    }
+  else
+    {
+      $SUCCESS = 1;
     }
 }
 
-use Window; 
-use InputLine;
+return if (! $SUCCESS);
 
 push @{ $code_hash{&MSG_SERVER_STATS} }, \&update_counts;
 push @{ $code_hash{&MSG_INIT} }, \&setup_curses;

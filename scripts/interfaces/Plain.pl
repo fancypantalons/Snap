@@ -2,21 +2,46 @@
 # Plain text interface module.
 #
 
-if ((defined $INTERFACE) || ($daemon)) { return 1; }
-
 $INTERFACE = 1;
 
 my $VERSION = "0.01";
 
 BEGIN
 {
+  if ((defined $INTERFACE) || ($daemon)) { $SUCCESS = 0; return 1; }
+
   foreach (@SCRIPT_PATH)
     {
       push @INC, "$_/PlainLib";
     }
+
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+
+  eval
+    {
+      require StdWindow;
+      import StdWindow;
+    };
+
+  $SIG{__DIE__} = $oh;
+
+  if ($@)
+    {
+      print "Error, unable to load Plain module...\n";
+
+      $SUCCESS = 0;
+
+      return 1;
+    }
+  else
+    {
+      $SUCCESS = 1;
+    }
 }
 
-use StdWindow; 
+return if (! $SUCCESS);
 
 #
 # Install keyboard handler;

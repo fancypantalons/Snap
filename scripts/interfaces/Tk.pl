@@ -5,10 +5,10 @@
 
 my $VERSION = "0.01";
 
-if ((defined $INTERFACE) || ($daemon)) { return 1; }
-
 BEGIN
 {
+  if ((defined $INTERFACE) || ($daemon)) { $SUCCESS = 0; return 1; }
+
   foreach (@SCRIPT_PATH)
     {
       push @INC, "$_/TkLib";
@@ -18,15 +18,40 @@ BEGIN
   {
     eval_file("TkImport.pl");
   }
+
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+
+  eval
+    {
+      require TkTextPrinter;
+      import TkTextPrinter;
+    };
+
+  $SIG{__DIE__} = $oh;
+
+  if ($@)
+    {
+      print "Error, unable to load Tk module...\n";
+
+      $SUCCESS = 0;
+
+      return 1;
+    }
+  else
+    {
+      $SUCCESS = 1;
+    }
 }
+
+return if (! $SUCCESS);
       
 if (! $TK_ENABLED)
 {
   print "Tk Import Module not loaded!\n";
   return 1;
 }
-
-use TkTextPrinter;
 
 $INTERFACE = 1;
 

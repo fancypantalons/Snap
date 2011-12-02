@@ -6,24 +6,49 @@
 
 use SnapLib::HandleWrapper;
 
-if (tied %handles)
-{
-  print "Unable to load Gtk Import module... existing wrapper detected!\n";
-  return 1;  
-}
-
 my $VERSION = "0.01";
 
 BEGIN
 {
-  eval "use Gtk; use Gtk::Atoms; use Gtk::Keysyms";
+  if (tied %handles)
+    {
+      $SUCCESS = 0;
+      return 1;  
+    }
+
+  my $oh = $SIG{__DIE__};
+
+  $SIG{__DIE__} = sub { return; };
+
+  eval 
+    { 
+      require Gtk; 
+      import Gtk; 
+
+      require Gtk::Atoms;
+      import Gtk::Atoms;
+
+      require Gtk::Keysyms;
+      import Gtk::Keysyms;
+    };
+
+  $SIG{__DIE__} = $oh;
 
   if ($@)
     {
       print "Error, unable to load Gtk Import module...\n";
+
+      $SUCCESS = 0;
+
       return 1;
     }
+  else
+    {
+      $SUCCESS = 1;
+    }
 }
+
+return if (! $SUCCESS);
 
 $GTK_ENABLED = init_check Gtk;
 

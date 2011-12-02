@@ -1,3 +1,17 @@
+0.05 to 0.06
+------------
+
+* Fixed a bug in the help code which caused CODE references to not be
+  properly executed.  Thanks to Glendon Johnson for the heads up.
+
+* Modified the file index code to sort the file entries before submitting
+  to the server.  Again, thanks to Glendon Johnson for the suggestion.
+
+* Changed the Snap version in the code.  Whoops!  Thanks to Iain Lea. :)
+
+===============================================================================
+
+
 0.04 to 0.05
 ------------
 

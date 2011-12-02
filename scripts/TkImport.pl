@@ -29,7 +29,6 @@ BEGIN
 
   $SIG{__DIE__} = $oh;
 
-
   if ($@)
     {
       print "Error, unable to load Tk Import module...\n";
@@ -46,7 +45,18 @@ BEGIN
 
 return if (! $SUCCESS);
 
-$TK_ENABLED = 1;
+eval {
+  $MainWin = new MainWindow(-title => 'Snap');
+};
+
+if ($@)
+  {
+    $TK_ENABLED = 0;
+  }
+else
+  {
+    $TK_ENABLED = 1;
+  }
 
 if ($TK_ENABLED)
 {
@@ -58,8 +68,6 @@ if ($TK_ENABLED)
 
   push @extensions, "Tk";
   print "Tk Import Module $VERSION Loaded...\n";
-
-  $MainWin = new MainWindow(-title => 'Snap');
 
   *main_loop = *main_tk;  # Overwrite the main loop sub.
 }

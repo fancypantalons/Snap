@@ -94,7 +94,7 @@ my %SPEEDS = (0 => "Unknown", 1 => "14.4", 2 => "28.8", 3 => "33.6",
               4 => "56.7", 5 => "64K", 6 => "128K", 7 => "Cable",
               8 => "DSL", 9 => "T1", 10 => "T3+");
 
-my $CLIENT_VERSION = "0.06";
+my $CLIENT_VERSION = "0.07";
 my $CLIENT_ID = "Snap $CLIENT_VERSION";
 
 my $REDIAL_DELAY = 60;
@@ -236,7 +236,10 @@ my %code_hash = (&MSG_ERR => [\&print_text],
 		 &MSG_SERVER_CONN_ERR => [],
 
                  &MSG_SHUTDOWN => [ \&shutdown_prog ],
-                 &MSG_INIT => [\&setup_server, \&setup_new_connection,
+
+                 &MSG_INIT => [\&update_cache, 
+                               \&setup_server, 
+                               \&setup_new_connection,
 			       \&login_to_napster]
                 );
 
@@ -893,7 +896,7 @@ sub call_handler
       
       foreach $func (@arr) 
         { 
-	  &$func(@_); 
+	  &$func(@_);
         }
     }
   elsif (ref($code_hash{$cmd}) eq "CODE")
@@ -908,13 +911,14 @@ sub call_handler
 
 ################### Routines for processing server commands #################
 
-sub send_file_list
+sub update_cache
 {
   my ($sock, $text) = @_;
   my $file;
-  my ($info, $data, $digest);
 
   return if ((! defined $upload) || ($upload eq ""));
+
+  print "Loading share data...\n";
 
   my @list = read_dir_tree("$upload");
   $cache = read_cache_file("$cachefile");
@@ -934,26 +938,24 @@ sub send_file_list
 
       debug_print("Cache", "Adding $file...\n");
 
-      my @stat_info = stat "$file";
       my $fhandle = new FileHandle("$file");
-      my $md5 = undef;
 
       if ((defined $fhandle) && (defined %MD5::))
         {
-          $md5 = new MD5;
+          my $md5 = new MD5;
+          my $data;
           
           sysread($fhandle, $data, 299008);
           $fhandle->close();
           
-          $md5->add($data) if (defined $md5);
+          $md5->add($data);
+          $$cache{$file}{"id"} = unpack("H*", $md5->digest());
         }
-
-      $info = get_mp3info("$file");
-
-      if (defined $md5)
-        { $$cache{$file}{"id"} = unpack("H*", $md5->digest()); }
       else
         { $$cache{$file}{"id"} = '00000000000000000000000000000000'; }
+
+      my @stat_info = stat "$file";
+      my $info = get_mp3info("$file");
 
       $$cache{$file}{"size"} = $stat_info[7];
       $$cache{$file}{"bitrate"} = $$info{"BITRATE"};
@@ -961,26 +963,37 @@ sub send_file_list
       $$cache{$file}{"time"} = $$info{"MM"} * 60 + $$info{"SS"};      
     }
 
+  my @keys = keys %$cache;
+
+  write_cache_file("$cachefile", $cache) if ($#keys >= 0);
+
   foreach $file (sort keys %$cache)
     {
-      next if ($file eq "");
-
       my $mangled_name = $file;
 
       $mangled_name =~ s/^\Q$upload\E//g;
       $mangled_name =~ s/\//\\/g;
 
-      $sock->send(MSG_FILE_INFO, "\"$mangled_name\" " . 
+      $$cache{$file}{name} = $mangled_name;
+    }
+}
+
+sub send_file_list
+{
+  my ($sock, $text) = @_;
+  my $file;
+
+  foreach $file (sort keys %$cache)
+    {
+      next if ($file eq "");
+
+      $sock->send(MSG_FILE_INFO, "\"$$cache{$file}{name}\" " . 
                                            "$$cache{$file}{id} " .
                                            "$$cache{$file}{size} " . 
                                            "$$cache{$file}{bitrate} " . 
                                            "$$cache{$file}{freq} " .
                                            "$$cache{$file}{time}");
     }
-
-  my @keys = keys %$cache;
-
-  write_cache_file("$cachefile", $cache) if ($#keys >= 0);
 }
 
 sub print_text
@@ -1317,11 +1330,9 @@ sub setup_upload
   $$text =~ /(.+?) "(.*)"/;
   $user = $1;
   $sentname = $2;
-  $filename = $sentname;
-  $filename =~ s/\\/\//g;
 
-  debug_print("Server", "Got upload request from $user for $filename... sending ack\n");
-  print "Got upload request from $user for $filename...\n";
+  debug_print("Server", "Got upload request from $user for $sentname... sending ack\n");
+  print "Got upload request from $user for $sentname...\n";
 
   if (($ul_limit >= 0) && ($#uploads + 1 >= $ul_limit))
     {
@@ -1334,10 +1345,18 @@ sub setup_upload
     }
 
   $upload{"user"} = $user;
-  $upload{"filename"} = $filename;
   $upload{"sentname"} = $sentname;
   $upload{"socket"} = undef;
   $upload{"type"} = "UPLOAD";
+
+  foreach (keys %$cache)
+    { 
+      if ($$cache{$_}{name} eq $sentname)
+        {
+          $upload{"filename"} = $_;
+          last;
+        }
+    }
 
   if ($ul_speed >= 0) { $upload{"limit"} = $ul_speed; }
 
@@ -1359,34 +1378,33 @@ sub start_alt_upload
 
   $$text =~ /(.+?) (\d+) (\d+) \"(.*)\" (.+) (\d)/;
   $user = $1; $sentname = $4; $ip = $2; $port = $3; $id = $5; $speed = $6;
-  $filename = $sentname;
-  $filename =~ s/\\/\//g;
 
   my ($a, $b, $c, $d) = unpack('C4', pack('V', $ip));
   $ip = "$a.$b.$c.$d";
 
-  my @stat_info = stat "$::upload/$filename";
-  $filesize = $stat_info[7];
-
   foreach $up (@uploads)
     {
       if (($$up{"user"} eq $user) &&
-          ($$up{"filename"} eq $filename))
+          ($$up{"sentname"} eq $sentname))
         {
           $upload = $up; last;
         }
     }
 
+  my @stat_info = stat "$$upload{filename}";
+  $filesize = $stat_info[7];
+
+  $filename = $$upload{filename};
+
   $$upload{"ip"} = $ip;
   $$upload{"size"} = $filesize;
   $$upload{"sent"} = 0;
-  $$upload{"filename"} = $filename;
-  $$upload{"file"} = new FileHandle "$::upload$filename";
+  $$upload{"file"} = new FileHandle "$filename";
   $$upload{"status"} = 2;
 
   if (! defined $$upload{"file"})
     {
-      print "Couldn't open upload file: $::upload$filename.\n";
+      print "Couldn't open upload file: $filename.\n";
 
       @uploads = grep { $_ ne $upload } @uploads;
 
@@ -1880,7 +1898,8 @@ sub do_search
               "bitrate" => 1,
               "freq" => 1,
               "regex" => 1,
-              "type" => 1);
+              "type" => 1,
+              "encode" => 0);
 
   return if ($#params < 0);
   my $results = getopts(\%opts, \@params);
@@ -1893,7 +1912,17 @@ sub do_search
   my $bitrate = shift @{ $results->{"bitrate"} };
   my $freq = shift @{ $results->{"freq"} };
   my $type = shift @{ $results->{"type"} };
+
   $search_pattern = shift @{ $results->{"regex"} };
+
+  if ($ENCODER_LOADED)
+    {
+      $artist = encode($artist) if ((defined $artist) && 
+                                    (defined $results->{"encode"}));
+
+      $file = encode($file) if ((defined $file) && 
+                                (defined $results->{"encode"}));
+    }
 
   my @speed_params = get_search_type($speed);
   my @bitrate_params = get_search_type($bitrate);
@@ -1930,7 +1959,8 @@ sub do_search_help
   &$print("    -SPEED <num><mod>   - User connection speed equals <num>.\n");
   &$print("    -COUNT <num>        - Limit count to <num> (max 100).\n");
   &$print("    -REGEX \"<pattern>\"  - Filter search results according to <pattern>.\n");
-  &$print("    -TYPE <mime>        - File type specification.  (OpenNap only)\n\n");
+  &$print("    -TYPE <mime>        - File type specification.  (OpenNap only)\n");
+  &$print("    -ENCODE             - Encode search request (based on encode script).\n\n");
   &$print("    Where <mod> is a modifier:\n\n");
   &$print("      <none> - EQUAL TO search.\n");
   &$print("      +      - AT LEAST search.\n");
@@ -3399,6 +3429,7 @@ sub upload_handshake
       debug_print("UL", "Sending info... $msg\n");
 
       $$up{"status"} = 5;
+
       return;
     }
   elsif ($$up{"status"} == 5)
@@ -3629,7 +3660,7 @@ sub handle_server_request
           if (($$up{"user"} =~ /\Q$username\E/i) &&
               ($$up{"sentname"} eq $filename))
             {
-              my @stat_info = stat "$upload/$$up{filename}";
+              my @stat_info = stat "$$up{filename}";
 	      my $old_up = $up;
 
               debug_print("Server", "Creating new upload of $$up{filename} ($stat_info[7])...\n");
@@ -3637,7 +3668,7 @@ sub handle_server_request
 
               $$up{"pos"} = $pos;
               $$up{"socket"} = $$conn{"socket"};
-              $$up{"file"} = FileHandle->new("$upload/$$up{filename}");
+              $$up{"file"} = FileHandle->new("$$up{filename}");
               $$up{"size"} = $stat_info[7];
 
 	      if ($$up{"socket"}->syswrite("$$up{size}", length("$$up{size}")) eq undef)

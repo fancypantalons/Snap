@@ -1,3 +1,21 @@
+0.06 to 0.07
+------------
+
+* Split the cache update code off into a seperate function which is called
+  during program initialization (MSG_INIT hook).  Should've done this a 
+  while ago. :)
+
+* Cleaned up the cache management code a little bit.  I should probably do
+  this in the rest of the code, too, but I'm lazy. :)
+
+* Added filename encoding framework and an example pig latin encoder.
+
+* Added auto-encoding to the /search command.  Add -encode flag to use it.
+
+
+===============================================================================
+
+
 0.05 to 0.06
 ------------
 
@@ -8,6 +26,7 @@
   to the server.  Again, thanks to Glendon Johnson for the suggestion.
 
 * Changed the Snap version in the code.  Whoops!  Thanks to Iain Lea. :)
+
 
 ===============================================================================
 

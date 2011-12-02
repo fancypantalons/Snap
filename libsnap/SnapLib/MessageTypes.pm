@@ -143,6 +143,6 @@ use constant MSG_SERVER_CONN_ERR => 65547;
 use constant MSG_DISCONNECT => 65548;
 
 use constant MSG_SHUTDOWN => 65549;
-use constant MSG_INIT => 65545;
+use constant MSG_INIT => 65550;
 
 1;

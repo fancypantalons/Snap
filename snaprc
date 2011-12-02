@@ -17,6 +17,10 @@ eval_file('Gtk.pl');
 eval_file('Curses.pl');
 eval_file('Plain.pl');
 
+# Load additional startup scripts.
+
+# eval_file('pig_latin.pl');
+
 #
 # Add a personal script directory to the scripts path.
 # You can add additional script directories here.

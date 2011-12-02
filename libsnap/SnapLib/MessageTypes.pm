@@ -1,0 +1,145 @@
+package SnapLib::MessageTypes;
+
+require Exporter;
+@ISA = qw(Exporter);
+
+@EXPORT = qw(
+MSG_ERR MSG_LOGIN MSG_LOGIN_ACK MSG_REG_INFO MSG_REG MSG_REG_OK 
+MSG_REG_EALREADY MSG_REG_EINVALID MSG_FILE_INFO MSG_SEARCH_REQ 
+MSG_SEARCH_ACK MSG_SEARCH_END MSG_DL_REQ MSG_DL_ACK MSG_PRIVATE 
+MSG_GET_ERR MSG_HOTLIST_ADD MSG_USER_SIGNON MSG_USER_SIGNOFF 
+MSG_BROWSE MSG_BROWSE_ACK MSG_BROWSE_END MSG_SERVER_STATS 
+MSG_DOWNLOADING MSG_DONE_DOWNLOADING MSG_UPLOADING MSG_DONE_UPLOADING 
+MSG_HOTLIST_ADD_ACK MSG_HOTLIST_ADD_ERR MSG_HOTLIST_REMOVE MSG_JOIN 
+MSG_PART MSG_SEND_MSG MSG_RCV_MSG MSG_OP_EEXIST MSG_JOIN_ACK 
+MSG_JOIN_MSG MSG_PART_MSG MSG_USER_LIST MSG_USER_LIST_END 
+MSG_CHAN_TOPIC MSG_SERVER_ERR MSG_DL_REQ_ALT MSG_DL_ALT_ACK MSG_SPEED 
+MSG_SPEED_ACK MSG_WHOIS MSG_WHOIS_ACK MSG_WHOWAS_ACK 
+MSG_MOD_USER_LEVEL MSG_UPLOAD MSG_UPLOAD_ACK MSG_USER_KILL 
+MSG_USER_NUKE MSG_USER_BAN MSG_SET_PORT MSG_USER_UNBAN 
+MSG_SHOW_BANLIST MSG_BAN_NOTIFY MSG_LIST_CHANNELS 
+MSG_LIST_CHANNELS_ENTRY MSG_QUEUE_LIMIT MSG_QUEUE_LIMIT_REACHED 
+MSG_MOTD MSG_USER_MUZZLE MSG_USER_UNMUZZLE MSG_USER_UNNUKE MSG_OP_MSG 
+MSG_GLOBAL_MSG MSG_BANLIST_ENTRY MSG_CHANGE_SPEED MSG_CHANGE_PASSWORD 
+MSG_CHANGE_EMAIL MSG_CHANGE_PORT MSG_PING MSG_PONG 
+MSG_SERVER_RELOAD_CFG MSG_GET_SERVER_VERSION MSG_SERVER_CFG MSG_EMOTE 
+MSG_USER_LIST_2_ENTRY MSG_USER_LIST_2 MSG_USER_LIST_2 
+MSG_SERVER_CONNECT MSG_SERVER_DISCONNECT MSG_SERVER_KILL 
+MSG_SERVER_REMOVE MSG_OPENNAP_STATS MSG_OPENNAP_STATS MSG_RECV_DL_BLOCK
+MSG_SENT_UL_BLOCK MSG_DL_INIT MSG_DL_START MSG_DL_END MSG_DL_ERR
+MSG_UL_INIT MSG_UL_START MSG_UL_END MSG_UL_ERR MSG_SERVER_CONN 
+MSG_SERVER_CONN_ERR MSG_DISCONNECT
+);
+
+############################# Napster Message Types ###########################
+
+use constant MSG_ERR => 0;
+use constant MSG_LOGIN => 2;
+use constant MSG_LOGIN_ACK => 3;
+use constant MSG_REG_INFO => 6;
+use constant MSG_REG => 7;
+use constant MSG_REG_OK => 8;
+use constant MSG_REG_EALREADY => 9;
+use constant MSG_REG_EINVALID => 10;
+use constant MSG_FILE_INFO => 100;
+use constant MSG_SEARCH_REQ => 200;
+use constant MSG_SEARCH_ACK => 201;
+use constant MSG_SEARCH_END => 202;
+use constant MSG_DL_REQ => 203;
+use constant MSG_DL_ACK => 204;
+use constant MSG_PRIVATE => 205;
+use constant MSG_GET_ERR => 206;
+use constant MSG_HOTLIST_ADD => 207;
+use constant MSG_USER_SIGNON => 209;
+use constant MSG_USER_SIGNOFF => 210;
+use constant MSG_BROWSE => 211;
+use constant MSG_BROWSE_ACK => 212;
+use constant MSG_BROWSE_END => 213;
+use constant MSG_SERVER_STATS => 214;
+use constant MSG_DOWNLOADING => 218;
+use constant MSG_DONE_DOWNLOADING => 219;
+use constant MSG_UPLOADING => 220;
+use constant MSG_DONE_UPLOADING => 221;
+use constant MSG_HOTLIST_ADD_ACK => 301;
+use constant MSG_HOTLIST_ADD_ERR => 302;
+use constant MSG_HOTLIST_REMOVE => 303;
+use constant MSG_JOIN => 400;
+use constant MSG_PART => 401;
+use constant MSG_SEND_MSG => 402;
+use constant MSG_RCV_MSG => 403;
+use constant MSG_OP_EEXIST => 404;
+use constant MSG_JOIN_ACK => 405;
+use constant MSG_JOIN_MSG => 406;
+use constant MSG_PART_MSG => 407;
+use constant MSG_USER_LIST => 408;
+use constant MSG_USER_LIST_END => 409;
+use constant MSG_CHAN_TOPIC => 410;
+use constant MSG_SERVER_ERR => 414;
+use constant MSG_DL_REQ_ALT => 500;
+use constant MSG_DL_ALT_ACK => 501;
+use constant MSG_SPEED => 600;
+use constant MSG_SPEED_ACK => 601;
+use constant MSG_WHOIS => 603;
+use constant MSG_WHOIS_ACK => 604;
+use constant MSG_WHOWAS_ACK => 605;
+use constant MSG_MOD_USER_LEVEL => 606;
+use constant MSG_UPLOAD => 607;
+use constant MSG_UPLOAD_ACK => 608;
+use constant MSG_USER_KILL => 610;
+use constant MSG_USER_NUKE => 611;
+use constant MSG_USER_BAN => 612;
+use constant MSG_SET_PORT => 613;
+use constant MSG_USER_UNBAN => 614;
+use constant MSG_SHOW_BANLIST => 615;
+use constant MSG_BAN_NOTIFY => 616;
+use constant MSG_LIST_CHANNELS => 617;
+use constant MSG_LIST_CHANNELS_ENTRY => 618;
+use constant MSG_QUEUE_LIMIT => 619;
+use constant MSG_QUEUE_LIMIT_REACHED => 620;
+use constant MSG_MOTD => 621;
+use constant MSG_USER_MUZZLE => 622;
+use constant MSG_USER_UNMUZZLE => 623;
+use constant MSG_USER_UNNUKE => 624;
+use constant MSG_OP_MSG => 627;
+use constant MSG_GLOBAL_MSG => 628;
+use constant MSG_BANLIST_ENTRY => 629;
+use constant MSG_CHANGE_SPEED => 700;
+use constant MSG_CHANGE_PASSWORD => 701;
+use constant MSG_CHANGE_EMAIL => 702;
+use constant MSG_CHANGE_PORT => 703;
+use constant MSG_PING => 751;
+use constant MSG_PONG => 752;
+use constant MSG_SERVER_RELOAD_CFG => 800;
+use constant MSG_GET_SERVER_VERSION => 801;
+use constant MSG_SERVER_CFG => 810;
+use constant MSG_EMOTE => 824;
+use constant MSG_USER_LIST_2_ENTRY => 825;
+use constant MSG_USER_LIST_2 => 830;
+
+use constant MSG_SERVER_CONNECT => 10100;
+use constant MSG_SERVER_DISCONNECT => 10101;
+use constant MSG_SERVER_KILL => 10110;
+use constant MSG_SERVER_REMOVE => 10111;
+use constant MSG_OPENNAP_STATS => 10115;
+
+######################### Internal Snap Message Types #########################
+
+use constant MSG_RECV_DL_BLOCK => 65536; 
+use constant MSG_SENT_UL_BLOCK => 65537;
+
+use constant MSG_DL_INIT => 65538;
+use constant MSG_DL_START => 65539;
+use constant MSG_DL_END => 65540;
+use constant MSG_DL_ERR => 65541;
+
+use constant MSG_UL_INIT => 65542;
+use constant MSG_UL_START => 65543;
+use constant MSG_UL_END => 65544;
+use constant MSG_UL_ERR => 65545;
+
+use constant MSG_SERVER_CONN => 65546;
+use constant MSG_SERVER_CONN_ERR => 65547;
+
+use constant MSG_DISCONNECT => 65548;
+
+1;

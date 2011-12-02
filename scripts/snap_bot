@@ -1,0 +1,35 @@
+#
+# This is an incredibly annoying example of a simple bot in Snap. :)
+#
+# As you can see, it hooks into the system initialization to log itself
+# into a specific channel, where it greets people who join the channel.
+#
+
+push @extensions, "DemoBot";
+
+push @{ $code_hash{&MSG_LOGIN_ACK} }, \&bot_init;
+push @{ $code_hash{&MSG_JOIN_MSG} }, \&greet_user;
+
+sub greet_user
+{
+  my ($sock, $text) = @_; 
+  my ($channel, $user, $sharing, $speed);
+  my %user_entry;
+
+  $$text =~ /(.+?) (.+?) (\d+?) (\d+)/;
+
+  $channel = $1; $user = $2; $sharing = $3; $speed = $4;
+
+  return if ($user eq $username);
+
+  do_send_public($sock, "Greetbot: Welcome to this channel $user!");
+}
+
+sub bot_init
+{
+  my ($sock, $text) = @_; 
+
+  do_chan_join($sock, "opennap");
+}
+
+

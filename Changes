@@ -1,0 +1,127 @@
+Oy, too many to count.  I'll split them into two groups.  Ones visible
+at the user level, and others visible at the developer and script
+writer's levels.
+
+User-Level Changes
+------------------
+
+* The ability to run Snap without needing Curses or other modules.  The
+  interface defaults to a bare, text-mode interface if these modules
+  aren't loaded.
+
+* Fixed bugs in option handling.  So /exec is fixed, among other things.
+  (You can again just do this:  /exec command).
+
+* Improved Curses input line.  Supports ^D key for deleting characters, and
+  the scrollback buffer now exhibits the same behaviour as GNU readline 
+  (I think :).
+
+* Improved Curses text window, supporting better scrollback buffer (less
+  glitchy, I think) and support for colours using a custom colour-code
+  system akin to Ksirc.  Of course, along with all of this comes a slight
+  speed degradation... doh! :)
+
+* GTK GUI module!  Need I say more? ;)  It's rough, but the basic functions
+  are there.  And in time, more and more functionality will be incorporated.
+
+* The remote.pl script, which allows control of snap via private messages,
+  has been totally revamped to take advantage of some of Snap's new
+  architecture changes.  Thus, it is MUCH more stable and less hacky. :)
+
+* Stability!  Always good... helps when you handle errors correctly. :)
+
+* Parameters to commands are case insensitive (as it should have been
+  originally).  Thanks to Guenter for noticing this. :)  Along with
+  this, the help was updated to be more consistent in terms of option 
+  case (even if this doesn't matter :).
+
+* Simpler installation process which doesn't require changes to the Snap
+  script.
+
+* Creation of a SCRIPT_PATH variable to ease the loading of external scripts.
+
+* Implementation of a download queue.  This is new code, so it's rough. :)
+  See /queue command or queue interface in GUI.
+
+* Addition of ETA information to the file transfers. 
+
+* Transfer information (eg rate and ETA) are updated on a one second basis, 
+  ensuring constant information update without excessive update speeds (which 
+  results in poor application performance, particularly for GUIs).
+
+* Addition of no-color operating mode.
+
+* Ability to alias commands to one another by putting the string of
+  the aliased command straight into the command hash.  eg:
+
+  $command_hash{"/k"} = "/dl -kill";
+
+  And added /alias command to do just this.
+
+
+Developer-Level Changes
+-----------------------
+
+Well, this is pretty hefty... :)
+
+* Changed windowing and input routines to use nice objects.  Now we have
+  a SnapLib directory, with SnapLib::Window, SnapLib::InputLine, 
+  SnapLib::StdWindow, and SnapLib::StdinLine modules.
+
+* Changed printing code to use tie'd STDOUT instead of object or function
+  calls.  Simplifies things and reduces dependancies between the interface
+  and low-level functions.
+
+* Due to the aforementioned changes, and some review of the code, I've
+  decided to no longer pass the cmdwin and textwin variables around.
+  These are rarely used in callbacks, and even less-so now, since the
+  do_command() function was modified to take a command string.  This is
+  going to break a LOT of scripts (assuming there are a lot ;).
+
+* Changed the screen output code to allow for colour codes to specify...
+  well... colours. :)  Format is as follows:  ~<num>; where num is a
+  colour number.  ~c; is used to indicated the ending of a colour region.
+
+* Napster communication now done through a new NapSocket object.  Encapsulates
+  the Napster communication code very nicely, and could easily be stolen
+  by other projects, if they like. :)  Now all writes to Napster go
+  through $sock->send(MSG_TYPE, DATA).
+
+* All Napster message types are stored in SnapLib::MessageTypes.  Again,
+  this is a nice, modular package, so you can use it in your own stuff
+  if you want. :)
+
+* Objects created for doing the raw upload and download transactions.
+  Handshaking is still done in the main app, but the objects are used to
+  perform the actual transfers.
+
+* A lot of hooks have been added for server connections and UL/DLs, to
+  facilitate the new GUI and allow more flexibility in scripting.
+
+* Error handling, Error handling, Error handling.  I've finally added
+  code to handle errors in places where I just didn't bother out of
+  sheer laziness, or because I was "going to get to that later". :)
+
+* Modified the process reaper code, to make it more stable and handle
+  large dl/ul deaths to be dealt with gracefully.  Also, a non-blocking
+  waitpid is now used, which helps to keep program flow smooth.
+
+* Help system changed so functions registered in %help_hash simply
+  return a text string containing the help text, rather than printing
+  themselves.  This makes it possible to extend the help system more
+  easily, since there is greater control over display.
+
+* I found out about "use lib ..." :)  So libraries are loaded using
+  script-relative paths.
+
+* Command and code callbacks can now be arrays of function references,
+  or function references themselves.  This is mostly for convenience.
+
+* Download and Upload status update callbacks are called on a one-second
+  basis through the transfer, regardless of it's state (stalled, etc),
+  improving application performance and user feedback.
+
+* Changed download semantics, so an entry is adding immediately when a
+  request is sent, rather than when a response is returned.  This makes
+  more sense, and makes it easier to manage downloads (you can kill
+  downloads waiting for a request response, etc).

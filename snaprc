@@ -1,22 +1,69 @@
 #
-# Snap RC file.  This is straight-up Perl, so you can do pretty much
-# anything in here, from adding new commands to redefining variables
-# and functions, to anything else you want.  
+# Example Snap RC file.  This is straight-up Perl, so you can do
+# pretty much anything in here, from adding new commands to redefining
+# variables and functions, or anything else you want.  This example file
+# demonstrates many of the things you can do with a Snap RC file, like
+# module loading and startup functions.
 #
 
-$username = "user";
+# Uncomment to load the GTK module
+
+# do 'SnapGtk.pl';
+
+# This line causes the function "startup_code" to be executed after
+# a correct log in.  It's a nice way to load code at startup, but
+# after initial application setup.
+
+push @{ $code_hash{&MSG_LOGIN_ACK} }, \&startup_code;
+
+#
+# Add a personal script directory to the scripts path.
+#
+
+push @SCRIPT_PATH, "$ENV{HOME}/snap/scripts";
+
+#
+# Now for the setup information.
+#
+
+$username = "username";
 $password = "password";
 
 $serverport = 6699;
 $speed = 7;                    # Speed corresponds to those with nap
 $email = "anon\@napster.com";
+
 $download = "$ENV{HOME}/snap/download";
 $upload = "$ENV{HOME}/snap/upload";
 $cachefile = "$ENV{HOME}/snap/cache.dat";
+$hotlist = "$ENV{HOME}/snap/hotlist.txt";
 
-# $hotlist = "hotlist.txt"
-# $daemon = 1;
+# $colours = 0;                  # Enable black and white mode.
+# $daemon = 1;                   # Enable daemon mode
 
-# You can evaluate Perl scripts on startup by using eval_file().
+#
+# Remote Controller Settings
+#
 
-# eval_file("examples/monitor.pl");
+# @allowed = ();
+# @disabled = ("/eval", "/exec");
+# $remote_password = "remote_pass";
+
+#
+# Function used to perform a one-time execution of code later during
+# program startup.  You should load your modules here.
+#
+
+sub startup_code
+{
+  # You can evaluate Perl scripts on startup by using eval_file().
+  # eval_file(), like "/eval", obeys the SCRIPT_PATH variable.
+
+  # eval_file("remote.pl");
+
+  # Remove this callback from the list after it's run, so it isn't
+  # run more than once (ie, on a reconnect).
+
+  my $callbacks = $code_hash{&MSG_LOGIN_ACK};
+  @$callbacks = grep { $_ ne \&startup_code } @$callbacks;
+}

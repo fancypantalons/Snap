@@ -1,102 +1,157 @@
-Snap v0.02a
+Snap v0.03
 A Perl Napster Client
 ---------------------
 
 http://ugweb.cs.ualberta.ca/~kosinski/snap
 email: brettk@ualberta.ca
 
-Snap is an open source, Perl, text-based Napster client written using
-the ncurses library for screen control.  It's main goal is to remain
-relatively slim while providing all the functionality demanded of a
-full-fledged Napster client.  It has been tested on the following
-platforms, although I'm sure many more will work without difficulty:
+Snap is an open source (licensed under the Artistic License), Perl-based
+Napster client.  It's main goal is to remain relatively slim while providing
+all the functionality demanded of a full-fledged Napster client.
 
-* Redhat Linux 5.2 (i686)
-* RedHat Linux 6.0 (i686)
-* OpenBSD 2.5
 
-All platforms use Perl 5, which is required (at least AFAIK) for Snap
-to run.
-
-Snap currently requires the following Perl modules to run:
-
-* Time::HiRes - For download/upload throttling.
-* Curses      - For screen control.
-* MD5         - For calculating MP3 MD5 signatures.
-
-Note:  It is quite possible to install these modules into a user home
-directory, allowing users to run Snap without needing admin access.
-See the section on Snap and Perl Modules for more information.
+Features
+--------
 
 Currently, Snap supports a wide range of features, including:
 
 * Full song searching and library browsing support. 
 * Regular expression filtering of search/browse results.
-* Multiple simultaneous upload and download support including upload speed
-  throttling.
+* Support for all upload and download methods, with upload speed throttling.
 * Resume support (mostly... :)
+* Download queuing (still rough, though :).
+* Efficient MP3 data cache for fast logins.
 * Chatting support, including multi-channel support.
-* Support of all admin commands, including Opennap extensions.
+* Support of most admin commands.
+* Support for a subset of Opennap extensions.
 * Hotlist support.
-* Support for most other Napster commands, including ping, whois,
-  etc.
+* Support for most other Napster commands, including ping, whois, etc.
 * Support for alternate metaservers and Napster servers, for use 
-  with Opennap.
+  with OpenNap and other independant networks.
 * Highly scriptable, including a builtin /eval function for evaluating
-  Perl code on the fly.
-* Builtin help facilities for all commands.
+  Perl code on the fly from within the client. 
+* Builtin help facility for all commands.
+* Nice Curses interface with scroll-back buffer, colour capabilities,
+  and GNU inputline-style input.
+* Additionally, an optional GTK GUI interface.
+* Small set of standard IRC commands, such as /exec.
 
-Of course, this is an early release, so much of the code is rough, but
-it's getting there. :)
+
+Supported Platforms
+-------------------
+
+Snap has been known to work on the following platforms, however I'm sure that
+as long as you have a working Perl5 installation, it should work (although
+perhaps not perfectly ;).
+
+* Redhat Linux 5.2 (i686)
+* RedHat Linux 6.0 (i686)
+* OpenBSD 2.5
+* FreeBSD 4.0 (thanks to Ed Heil)
+* Digital Unix 4.0 (thanks to Hugo Leote)
++ SunOS
+
+All platforms use Perl 5, which is required (at least AFAIK) for Snap
+to run.  As well, you need a working version of basic POSIX IPC (fork(),
+signals, pipes, etc)... meaning no Win32... :(
+
++ There is limited support for SunOS, however, there are known issues with 
+  the Curses interface (ie, it doesn't work properly :) that seems to be a
+  result of a broken Curses implementation on that platform.  However, the
+  plain text and GUI interfaces should work.
+
+
+Software Requirements
+---------------------
+
+In terms of required software, Snap only needs a working Perl 5 installation.
+However, snap can take advantage of various additional modules, if they are
+available.  The presence of these modules causes the inclusion of various
+additional features.  The following is a list of the modules Snap can take
+advantage of, and the features which are enabled when they are present.
+
+* Time::HiRes - Upload speed throttling.
+* Curses      - Full-screen TUI interface.
+* MD5         - Correct MP3 MD5 signatures.
+# Gtk         - GTK GUI Module requires this (this must be loaded explicitly).
+
+Lack of these modules will result in the following modified behaviours:
+
+* Time::HiRes - Upload speed throttling settings will be ignored.
+* Curses      - Ugly plaintext interface will be used. :)
+* MD5         - A dummy MD5 signature like OpenNap's will be used (all 0's).
+* Gtk         - Fallback to whatever TUI is available.
+
 
 Installing Snap
 ---------------
 
-Well, first, you need to install the Time::HiRes, Curses, and MD5 modules.  
-I would take a look at CPAN for these.  Once you've done this, you'll have
-to modify the first line of the snap file to point to your Perl binary,
-and change the -I flag to point to your snap directory. You'll want to
-change the directory to be a full path name if you want to run snap from a
-directory other than it's home directory.
+First of all, it's possible to run Snap straight from the directory
+created by the tarball.  However, if this is to be a system-wide
+installation, simply run the install.sh script.  This will install
+Snap into the following directories:
 
-After all this is done, copy the snaprc file to ~/.snaprc.
+snap    -> /usr/local/bin/snap
+libsnap -> /usr/local/lib/libsnap
+snaprc  -> /usr/local/share/snap/snaprc
+scripts -> /usr/local/share/snap/scripts
 
-As well, if you wish to install Snap in a system-wide directory, try doing
-the following:
+You can edit the install script if you wish to install Snap into a 
+different location, however Snap assumes your system obeys Unix path
+conventions (ie, bin/, lib/, share/ in one common directory).
 
-Create /usr/local/share/snap
-Copy the MPEG directory and nbsocket.pm to /usr/local/share/snap
-Edit the first line of snap:
+Once the script is run, a user can run the snap.inst script (again,
+you can change this name if you like) to install the snaprc file and
+to populate the basic snap directory.
 
-  #!/usr/bin/perl -I./
 
-to
+Running Snap
+------------
 
-  #!/usr/bin/perl -I/usr/local/share/snap
+Well, there isn't a lot to it.  To get help with parameters, type:
 
-That should do it! If you have any troubles, make sure the permissions
-on all the files/directories are correct (755 for snap and MPEG, 644 for 
-nbsocket and the contents of the MPEG directory). :)
+  snap -h
 
-Snap and Perl Modules
----------------------
-If you don't have admin access to your system, it may be necessary to
-install the required Perl modules to run snap in your home directory.
-In order to do this, you'll need to get the packages from CPAN.  Then,
-copy the following files into the Snap distribution directory:
+This will display a help screen with all the command-line parameters
+available.
 
-Curses.pm -> snapdir/
-MD5.pm -> snapdir/
-Time/HiRes.pm -> snapdir/Time/
-Curses.bs,Curses.so -> snapdir/auto/Curses/
-MD5.bs,MD5.so,autosplit.ix -> snapdir/auto/MD5/
-HiRes.bs,HiRes.so -> snapdir/auto/Time/HiRes/
+When Snap is running, you can get access to the online help through the "/help"
+command.  Use this command to get a list of the commands and their operation.
 
-This should be all that is necessary to install Snap into a home 
-directory.
+Index of available commands:
 
-License Information
--------------------
-
-Snap is placed under the Artistic License.  Please see the LICENSE
-document for specific terms and conditions.
+    /admin            - Execute Napster Admin command  
+    /alias            - Create command alias
+    /browse           - Browse a particular users share list
+    /clear            - Clear the screen
+    /config           - Configure some run-time option
+    /dl               - Perform an operation on a download
+    /dlist            - Get current download list
+    /eval             - Evaluate perl code or file
+    /exec             - Execute application and display results
+    /filter           - Filter current search/browse results with regex
+    /get              - Download file(s)
+    /global           - Send a global message
+    /help             - Get help
+    /hotlist          - Manage hotlist
+    /join             - Join a channel
+    /list             - List current available channels
+    /me               - Send emote
+    /msg              - Send private message to user
+    /op               - Perform an operator command
+    /pagedown         - Page screen down
+    /pageup           - Page screen up
+    /part             - Part the specified channel
+    /ping             - Ping a user
+    /queue            - Add file(s) to download queue
+    /quit             - Quit program
+    /reconnect        - Reconnect to current server or another one
+    /resume           - Resume a file transfer
+    /search           - Perform a song search
+    /send             - Send a line to the current channel
+    /speed            - Get connection type for user
+    /ul               - Perform operation on an upload
+    /ulist            - Display the current upload list
+    /users            - Get list of users in current channel
+    /whois            - Perform a whois on a user
+    About             - Information about Snap

@@ -52,9 +52,14 @@ sub new
     _exit(0);
   };
 
+#  $SIG{__DIE__} = sub {
+#      debug_print("UL", "Error: $!\n");
+#      _exit(0);
+#  };
+
   my $s1 = new IO::Select;
   my $s2 = new IO::Select;
-  my @ready;
+  my @ready;  
 
   $s1->add($self->{"socket"});
   $s2->add($read_child);
@@ -65,11 +70,11 @@ sub new
       $self->{"pos"} = 0;
     }      
 
-  my ($oldt, $curt, $start) = (0, 0, time());
+  my ($oldt, $curt, $start) = (time(), 0, time());
 
   while (1)
     {
-      @ready = IO::Select->select($s2, $s1, 1);
+      @ready = IO::Select->select($s2, $s1, undef, 1);
 
       $curt = time();
 

@@ -49,8 +49,6 @@ sub print
 
   if (defined $self->{"window"})
     { $self->{"window"}->print("$text") }
-  elsif (tied(*STDOUT) eq $self)
-    { print $handle $text; }
 
   return if ($main::user eq undef);
 
@@ -164,8 +162,7 @@ my $active = 1;
 
 $REMOTE_VERSION = "0.02";
 
-push @extensions, "Rem";
-print "Remote Controller $REMOTE_VERSION loaded...\n";
+print "~13;Remote Controller~c; $REMOTE_VERSION loaded...\n";
 
 local *H = *STDOUT;
 tie *STDOUT, 'RemoteWindow', *H;  # Tie our remote windowing code to STDOUT

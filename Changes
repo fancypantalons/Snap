@@ -1,3 +1,146 @@
+0.03 to 0.04
+------------
+
+This version is yet another architectural evolution.  The change to 
+use of %handles hash for event loop hooking, further separation of
+GUI from core code, and many other changes, make this a hefty new
+version as well. :)
+
+* More stability! :)  Uploads in the last version were rather broken.
+  Hopefully those issues are fixed in this version.  Testing is gooood...
+
+* Changed keyboard handling to add additional backspace mapping for UK
+  keyboards.
+
+* Changed /eval to use eval_file() for evaluating script files, and added
+  appropriate error output to eval_file().  This means Snap outputs nice
+  errors when the RC file isn't found, amongst other things.
+
+* Added -f command-line option, which specifies a script to load on
+  startup before the rcfile is loaded.  This allows, for example:
+
+  snap -f Gtk.pl
+
+* Moved SnapGtk into the scripts directory, and now treat it like a true
+  script.  As well, SnapGtk is now known as just plain Gtk.
+
+* Created the Curses interface script, similar in spirit to the Gtk script.
+  This means that you can choose to load the Curses module or not.
+
+* Created the Plain interface script, which provides a plain text interface
+  with colour codes stripped out.
+
+* Updated the default snaprc file with the new interface loading commands.  
+  Also simplified and cleaned up the script.
+
+* Created the new Sock module, for controlling Snap through a TCP/IP socket.
+
+* Created the new %handles variable, which contains a hash which maps
+  sockets and handlers, in the following structure:
+
+    "$sock"  =>   { Handle => $sock, Callback => \&sub }
+
+  This structure is used to add user handles to the event loop of Snap.
+  See the sock.pl script for an example use.  This idea was inspired by
+  a similar mechanism in Net::IRC.
+
+  See the Gtk.pl script for how wrapper scripts can use tie() to intercept
+  additions to the %handles variable to incorporate them into their
+  event loops.
+
+* Due to the existence of the new %handles variable, I've completely
+  removed the input code from the main snap script, and placed it in the
+  interface scripts.  As well, I've taken out any remaining window
+  dependancies (clear, pageup/down) so the interface code is now totally
+  segregated from the main snap script.
+
+* Added MSG_SHUTDOWN message type, to allow hooking into the shutdown
+  procedure.  Now used in the Curses module to call endwin() at the
+  appropriate time.
+
+* Added MSG_INIT.  Changed interface code to use MSG_INIT to initialize
+  themselves, and then overwrite main_loop() if necessary.  snaprc script
+  changed to use MSG_INIT for loading scripts.  Modified snap to use MSG_INIT
+  to set up server and Napster connection.
+
+* Changed cache behaviour so entries are allowed only if the file exists
+  and it is in the correct upload directory.
+
+* Changed hotlist and cache behaviour to not create data files if there
+  are no entries.
+
+* /clear works again in the Curses interface. :)
+
+* Changed all downloads, uploads, server, etc, to use the new %handles
+  hash for hooking into the event loop.  This is much more interface
+  independant, and a much more pleasant way to implement things.
+
+* Changed Gtk script so it properly uses %handles for event handling.
+
+* Fixed hotlist and cache saving so, if the file can't be created, an
+  appropriate error is displayed.
+
+* Added support for file type in OpenNap searches.
+
+* Improved documentation in example snaprc file, including some undocumented 
+  variables, like the max upload speed and queue limit variables.
+
+* Fixed upload speed throttling code.
+
+* Fixed "sent" field updating in Uploads list.
+
+* Changed Remote so it doesn't advertise itself in your client ID, as a
+  security precaution.
+
+* Fixed bug in filter labeling all returned results as number 1.
+
+* Added ability to specify messages to trace for debugging purposes.
+
+* Added ability to specify which debug messages to log to file for debugging.
+
+* Split the Gtk module into a library import module and the actual GUI
+  module.  This allows you to use Gtk with other interface modules like
+  Curses or Plain, if you want to do that.  Or you could implement a
+  different GUI entirely while reusing the Gtk import module.
+
+* Split off the %handles wrapper object into a seperate object in the
+  SnapLib directory, to make it easier to wrap Snap in another event model.
+  
+* Due to the previous change, we now have the TkImport module, for wrapping
+  Snap in Perl/Tk.
+
+* Wrote rudimentary Perl/Tk interface script.  Provides an input line and
+  a fully-functional text window.
+
+* Cleaned up file transfer callbacks (the INIT and START callbacks) for ULs
+  and DLs so the called functions receive the same hash, and the START
+  callback no longer hash an old_hash and new_hash argument.
+
+* Fixed the Time::HiRes dependency for uploads.  You should be able to
+  operate quite happily without it now. :)
+
+* Added proper error handling for all sysread() and syswrite() calls.  This
+  should help to clear up file transfer bugs... we'll see, though.
+
+* Extended the ul_kill and dl_kill functions to take upload/download structure
+  references.  This was exploited to greatly clean up the process reaper.
+
+
+===============================================================================
+
+
+0.03 to 0.03a
+-------------
+
+* Fixed a major bug in the upload code which caused a crash of the client.
+
+
+===============================================================================
+
+
+0.02 to 0.03
+------------
+
 Oy, too many to count.  I'll split them into two groups.  Ones visible
 at the user level, and others visible at the developer and script
 writer's levels.

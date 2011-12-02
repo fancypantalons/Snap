@@ -1,4 +1,4 @@
-Snap v0.03
+Snap 0.04
 A Perl Napster Client
 ---------------------
 
@@ -7,7 +7,10 @@ email: brettk@ualberta.ca
 
 Snap is an open source (licensed under the Artistic License), Perl-based
 Napster client.  It's main goal is to remain relatively slim while providing
-all the functionality demanded of a full-fledged Napster client.
+all the functionality demanded of a full-fledged Napster client.  The
+fundamental design involves providing a basic core, with all the code
+necessary to communicate with the Napster server, and provide any additional
+functionality, including user interfaces, as separate add-on scripts.
 
 
 Features
@@ -23,18 +26,23 @@ Currently, Snap supports a wide range of features, including:
 * Efficient MP3 data cache for fast logins.
 * Chatting support, including multi-channel support.
 * Support of most admin commands.
-* Support for a subset of Opennap extensions.
+* Support for Opennap extensions.
 * Hotlist support.
 * Support for most other Napster commands, including ping, whois, etc.
 * Support for alternate metaservers and Napster servers, for use 
   with OpenNap and other independant networks.
-* Highly scriptable, including a builtin /eval function for evaluating
-  Perl code on the fly from within the client. 
+* Highly flexible and scriptable, including a builtin /eval function for 
+  evaluating Perl code on the fly from within the client. 
 * Builtin help facility for all commands.
-* Nice Curses interface with scroll-back buffer, colour capabilities,
-  and GNU inputline-style input.
-* Additionally, an optional GTK GUI interface.
 * Small set of standard IRC commands, such as /exec.
+* The choice of three different user interface options:
+
+    Gtk    - Graphical interface for X.
+    Tk     - Another GUI, using Tk instead of Gtk.  Very rudimentary.
+    Curses - Text mode, full-screen text interface, with scroll-back,
+             colour, and GNU inputline-stype input.
+    Plain  - Plain text, console interface, suitable for terminals with
+             poor capabilities, or for use with separate front-ends.
 
 
 Supported Platforms
@@ -44,21 +52,18 @@ Snap has been known to work on the following platforms, however I'm sure that
 as long as you have a working Perl5 installation, it should work (although
 perhaps not perfectly ;).
 
+* AIX 4.2 (Matthew Shaw)
+* Digital Unix 4.0 (Hugo Leote)
+* FreeBSD 4.0 (Ed Heil)
+* OpenBSD 2.5
 * Redhat Linux 5.2 (i686)
 * RedHat Linux 6.0 (i686)
-* OpenBSD 2.5
-* FreeBSD 4.0 (thanks to Ed Heil)
-* Digital Unix 4.0 (thanks to Hugo Leote)
-+ SunOS
+* Debian Linux (Potato)
+* SunOS (Curses interface is broken, though)
 
 All platforms use Perl 5, which is required (at least AFAIK) for Snap
 to run.  As well, you need a working version of basic POSIX IPC (fork(),
-signals, pipes, etc)... meaning no Win32... :(
-
-+ There is limited support for SunOS, however, there are known issues with 
-  the Curses interface (ie, it doesn't work properly :) that seems to be a
-  result of a broken Curses implementation on that platform.  However, the
-  plain text and GUI interfaces should work.
+signals, pipes, etc)... meaning no Win32 (can't select() on STDIN!)
 
 
 Software Requirements
@@ -71,16 +76,11 @@ additional features.  The following is a list of the modules Snap can take
 advantage of, and the features which are enabled when they are present.
 
 * Time::HiRes - Upload speed throttling.
-* Curses      - Full-screen TUI interface.
-* MD5         - Correct MP3 MD5 signatures.
-# Gtk         - GTK GUI Module requires this (this must be loaded explicitly).
+* MD5         - (Mostly :) Correct MP3 MD5 signatures.
 
-Lack of these modules will result in the following modified behaviours:
-
-* Time::HiRes - Upload speed throttling settings will be ignored.
-* Curses      - Ugly plaintext interface will be used. :)
-* MD5         - A dummy MD5 signature like OpenNap's will be used (all 0's).
-* Gtk         - Fallback to whatever TUI is available.
+In addition, the user interface modules have their own requirements.  For
+example, the Gtk interface obviously needs Perl/Gtk installed, and the
+Curses interface needs a working Curses module installed. :)
 
 
 Installing Snap
@@ -108,12 +108,21 @@ to populate the basic snap directory.
 Running Snap
 ------------
 
-Well, there isn't a lot to it.  To get help with parameters, type:
+Well, there isn't a lot to it.  Before anything, make sure you've
+got a .snaprc file installed in your home directory, and you've editted
+it to contain your preferred settings.  The file is somewhat self
+documenting, so just look there to see what's available.
+
+To get help with command-line parameters, type:
 
   snap -h
 
-This will display a help screen with all the command-line parameters
-available.
+If you're logging into Napster for the first time, edit your .snaprc to
+include your desired username and password, and then run snap like this:
+
+  snap -n
+
+This will cause snap to register you as a new user.
 
 When Snap is running, you can get access to the online help through the "/help"
 command.  Use this command to get a list of the commands and their operation.

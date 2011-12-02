@@ -47,18 +47,19 @@ find $SHARE_PATH -type f -exec chmod 644 \{\} \;
 
 echo "Creating user install script ($SCRIPT_NAME)..."
 
-echo "#!/bin/sh
+cat <<EOF > $USER_SCRIPT
+#!/bin/sh
 
-echo \"Copying RC file...\"
+echo "Copying RC file..."
 cp $SHARE_PATH/snaprc \$HOME/.snaprc
 
-echo \"Creating snap directory...\"
+echo "Creating snap directory..."
 mkdir \$HOME/snap
 mkdir \$HOME/snap/upload
 mkdir \$HOME/snap/download
 
 echo
-echo \"Please edit your .snaprc to set your username and password.\"
-" > $USER_SCRIPT
+echo "Please edit your .snaprc to set your username and password."
+EOF
 
 chmod 755 $USER_SCRIPT

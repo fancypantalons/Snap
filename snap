@@ -26,6 +26,7 @@ use lib "$FindBin::Bin/../lib/libsnap";
 # Now load the system libraries we need.
 #
 
+use Data::Dumper;
 use IO::Select;
 use IO::Socket;
 use Net::hostent;
@@ -54,22 +55,21 @@ use POSIX qw(strftime);
 
 BEGIN
   {
-    eval {  require Curses; import Curses };
-    print "Curses support not found... using plaintext mode.\n" if ($@);
-
     eval { require MD5; import MD5 };
     print "MD5 hash support not found... using dummy hash value.\n" if ($@);
 
     eval { require Time::HiRes; import Time::HiRes };
-    print "HiRes timer support not found... UL throttling disabled.\n" if ($@);
+
+    if ($@)
+      {
+	print "HiRes timer support not found... UL throttling disabled.\n";
+	undef %Time::HiRes::;
+      }
   }
 
 #
 # Here we load the Snap libraries...
 #
-
-eval    { require SnapLib::Window; require SnapLib::InputLine };
-if ($@) { require SnapLib::StdWindow; require SnapLib::StdinLine }
 
 use SnapLib::Debug;
 use SnapLib::NapSocket;
@@ -82,25 +82,29 @@ use MPEG::MP3Info;
 
 #############################################################################
 
-$SIG{INT} = sub { shutdown_prog($napster_sock, "SIGINT") };
-$SIG{PIPE} = sub { shutdown_prog($napster_sock, "SIGPIPE: $!") };
+$SIG{INT} = sub { die_handler("SIGINT") };
+$SIG{PIPE} = sub { die_handler("SIGPIPE: $!") };
 $SIG{CHLD} = \&reaper;
+
+$SIG{__DIE__} = \&die_handler;
 $SIG{__WARN__} = \&warn_handler;
 
-my $CLIENT_VERSION = "0.03";
-my $CLIENT_ID = "Snap v$CLIENT_VERSION";
-my $RC_FILE = "$ENV{HOME}/.snaprc";
 my ($TRUE, $FALSE) = (1, 0);
-my $SCROLL_LENGTH = 101;
-my $TAB_WIDTH = 8;
-my $POLL_DELAY = 1;
-my $REDIAL_DELAY = 60;
-my @SCRIPT_PATH = ("$FindBin::Bin/scripts",
-                   "$FindBin::Bin/../share/snap/scripts");
-
 my %SPEEDS = (0 => "Unknown", 1 => "14.4", 2 => "28.8", 3 => "33.6",
               4 => "56.7", 5 => "64K", 6 => "128K", 7 => "Cable",
               8 => "DSL", 9 => "T1", 10 => "T3+");
+
+my $CLIENT_VERSION = "0.04";
+my $CLIENT_ID = "Snap $CLIENT_VERSION";
+
+my $REDIAL_DELAY = 60;
+my $RC_FILE = "$ENV{HOME}/.snaprc";
+
+my @SCRIPT_PATH = ("$FindBin::Bin/scripts",
+		   "$FindBin::Bin/scripts/interfaces",
+
+                   "$FindBin::Bin/../share/snap/scripts",
+                   "$FindBin::Bin/../share/snap/scripts/interfaces");
 
 my %command_hash = ("/quit" => [\&do_quit],
                     "/search" => [\&do_clear_results, \&do_search],
@@ -112,7 +116,6 @@ my %command_hash = ("/quit" => [\&do_quit],
                     "/dl" => [\&do_download_op],
                     "/ul" => [\&do_upload_op],
                     "/eval" => [\&do_eval],
-                    "/clear" => [\&do_clear],
                     "/reconnect" => [\&do_reconnect],
                     "/list" => [\&do_list_channels],
                     "/browse" => [\&do_clear_results, \&do_browse],
@@ -123,8 +126,6 @@ my %command_hash = ("/quit" => [\&do_quit],
                     "/msg" => [\&do_send_private_msg],
                     "/users" => [\&do_get_user_list],
                     "/hotlist" => [\&do_hotlist],
-                    "/pageup" => [\&do_page_up],
-                    "/pagedown" => [\&do_page_down],
                     "/exec" => [\&do_exec],
                     "/ping" => [\&do_ping],
                     "/speed" => [\&do_speed],
@@ -149,7 +150,6 @@ my %help_hash = ("About" => \&do_about,
                  "/ul" => \&do_ul_help,
                  "/eval" => "Usage: /eval <expr> | -file <file>\n\n" .
                             "  Evaluates Perl expression or file.\n\n",
-                 "/clear" => "Usage: /clear\n\n  Clears the display.\n\n",
                  "/reconnect" => "Usage: /reconnect [host:port]\n\n  Connect to new server.\n\n",
                  "/list" => "Usage: /list\n\n  Lists channels on server.\n\n",
                  "/browse" => "Usage: /browse <user>\n\n  Browses files offered by <user>.\n\n",
@@ -160,8 +160,6 @@ my %help_hash = ("About" => \&do_about,
                  "/msg" => "Usage: /msg <user> <msg>\n\n  Send private message to <user>.\n\n",
                  "/users" => "Usage: /users\n\n  Get list of users in current channel.\n\n",
                  "/hotlist" => \&do_hotlist_help,
-                 "/pageup" => "Usage: /pageup\n\n  Causes the screen to shift up by a half-page.\n\n",
-                 "/pagedown" => "Usage: /pagedown\n\n  Causes the screen to shift down by a half-page\n\n",                 
                  "/exec" => \&do_exec_help,
                  "/ping" => "Usage: /ping <user>\n\n  Send a ping to the specified user.\n\n",
                  "/speed" => "Usage: /speed <user>\n\n  Request the connection type of a given user.\n\n", 
@@ -174,9 +172,10 @@ my %help_hash = ("About" => \&do_about,
 		 "/alias" => \&do_alias_help,
                  "/help" => \&do_help_help);
 
+
 my %code_hash = (&MSG_ERR => [\&print_text],
                  &MSG_LOGIN_ACK => [\&send_file_list, \&send_hotlist],
-                 &MSG_SERVER_STATS => [\&update_counts],
+                 &MSG_SERVER_STATS => [],
                  &MSG_MOTD => [\&print_text],
                  &MSG_SEARCH_ACK => [\&get_search_result],
                  &MSG_SEARCH_END => [\&print_search_results],
@@ -228,22 +227,23 @@ my %code_hash = (&MSG_ERR => [\&print_text],
 		 &MSG_DL_INIT => [],
 		 &MSG_DL_START => [],
 		 &MSG_DL_END => [\&queued_download_end],
-		 &MSG_DL_ERR => [\&queued_download_end, \&send_queued_request],
+		 &MSG_DL_ERR => [\&queued_download_end],
 		 &MSG_UL_INIT => [],
 		 &MSG_UL_START => [],
 		 &MSG_UL_END => [],
 		 &MSG_UL_ERR => [],
 		 &MSG_SERVER_CONN => [],
-		 &MSG_SERVER_CONN_ERR => []
+		 &MSG_SERVER_CONN_ERR => [],
+
+                 &MSG_SHUTDOWN => [ \&shutdown_prog ],
+                 &MSG_INIT => [\&setup_server, \&setup_new_connection,
+			       \&login_to_napster]
                 );
 
 ###########################################################################
 
-my @extensions = ();
-my @poll_funcs = ();
-
 my (@search_results, @downloads, @uploads, @channels, @connections, @hotlist,
-    @banlist, @download_queue);
+    @banlist, @download_queue, %handles, @extensions, %handler_trace);
 
 my $active_channel;
 my %user_lists;
@@ -251,8 +251,9 @@ my %pings;
 my $cache;
 my $search_pattern;
 my $queue_transferring = 0;
+my $queue_current;
 
-my ($username, $password, $serverport, $speed, $email);
+my ($username, $password, $serverport, $speed, $email) = ('', '', 6699, 7, 'me@snap.com');
 my $logname = "";
 my $hotlist = "hotlist.txt";
 my $cachefile = "cache.dat";
@@ -263,9 +264,8 @@ my $metaport = "8875";
 my $newuser = 0;
 my $daemon = 0;
 my $colours = 1;
-my ($ul_count, $ul_limit) = (0, -1);
+my ($ul_speed, $ul_limit) = (-1, -1);
 my @host;
-my @win;
 
 Getopt::Long::config("pass_through");
 
@@ -273,24 +273,84 @@ Getopt::Long::config("pass_through");
   my $snapname;
   my $help;
   my $eval_func;
+  my @eval_file;
+  my $daemon_mode;
+  my @trace;
+  my @log_messages;
+  my $print_messages;
 
   my %optctl = ("i" => \$snapname,
-                "e" => \$eval_func);
+                "e" => \$eval_func,
+		"f" => \@eval_file,
+                "d" => \$daemon_mode,
+		"t" => \@trace,
+		"w" => \@log_messages,
+		"c" => \$print_messages);
 
-  GetOptions(\%optctl, "i=s", "e=s");
+  GetOptions(\%optctl, "i=s", "e=s", "f=s@", "d!", "t=s@", "w=s@", "c!");
 
+  if ($print_messages)
+    {
+      my $i = 0;
+
+      print "\nAvailable Callback Types:\n\n";
+
+      foreach (grep {/^MSG.*$/} sort keys %SnapLib::MessageTypes::)
+        {
+	  print "$_"; $i++;
+  
+	  if ($i == 3)
+	    { 
+	      print "\n"; 
+	      $i = 0;
+	    }
+	  else
+	    { print " " x (25 - length($_)); }
+        }
+
+      print "\n";
+
+      exit(0);
+    }
+
+  if (defined $daemon_mode) { $daemon = 1; }
   if (defined $snapname) { $RC_FILE = $snapname; }
-  if (defined $eval_func) { eval $eval_func; }
+  if (defined $eval_func) { eval $eval_func; print "$@\n" if ($@); }
+
+  if ($#eval_file >= 0) 
+    { 
+      foreach (@eval_file) 
+        { eval_file($_) }
+    }
+
+  if ($#trace >= 0) 
+    { 
+      foreach (@trace) 
+        { 
+	  eval("\$handler_trace{\&$_} = \"$_\""); 
+        }
+    }
+
+  if ($#log_messages >= 0) 
+    { 
+      foreach (@log_messages)
+        { SnapLib::Debug::add_debug_catagory($_); }
+    }  
+  else
+    { SnapLib::Debug::add_debug_catagory("all"); }
 }
 
-if (-e $RC_FILE)
-{
-  eval_file($RC_FILE);
-}
+if (! -e $RC_FILE)
+  { 
+    print "Error, unable to load RC file!  This could cause login errors...\n";
+    print "Loading plain text interface by default...\n";
+
+    eval_file('Plain.pl');
+  }
 else
-{
-  print "Error, couldn't load RC file!\n";
-}
+  {
+    eval_file($RC_FILE);
+  }
 
 Getopt::Long::config("no_pass_through");
 
@@ -308,14 +368,13 @@ Getopt::Long::config("no_pass_through");
                 "r" => \$redial,
                 "n" => \$new,
                 "l" => \$log,
-                "d" => \$daemon_mode,
                 "u" => \$username,
                 "p" => \$password,
                 "o" => \$serverport,
                 "h" => \$help,
 		"b" => \$bw);
 
-  if (!GetOptions(\%optctl, "s=s", "m=s", "r=f", "n!", "l=s", "d!", "i=s",
+  if (!GetOptions(\%optctl, "s=s", "m=s", "r=f", "n!", "l=s", "i=s",
                   "u=s", "p=s", "o=i", "h!", "b!"))
     {
       do_cmdline_help();
@@ -355,18 +414,13 @@ Getopt::Long::config("no_pass_through");
   if (defined $bw) { $colours = 0; }
 }
 
-autoflush STDOUT 1;              # Set screen to autoflush.
+STDOUT->autoflush(1);              # Set screen to autoflush.
 
 debug_init($logname);
-
-setup_server();
-setup_new_connection();
-
-@win = setup_screen() if (! $daemon);
-
+call_handler(MSG_INIT, $napster_sock);
 main_loop();
 
-################################ Signal Handler ##########################
+############################### Signal Handlers ###########################
 
 sub reaper
 {
@@ -374,54 +428,28 @@ sub reaper
   my $trans;
   my $i;
 
-  #
-  # The reaper grabs processes in batch, meaning that if a load of
-  # uploads/downloads terminate, they are reaped at the same time.  This
-  # is much more efficient, and negates the worry that we miss a SIGCHLD in
-  # the process of reaping another process.
-  #
-  # Note, this code still needs to be cleaned up quite a bit.
-  #
-
   debug_print("Reaper", "Reaper started...\n");
 
   while(($pid = waitpid(-1, &WNOHANG)) > 0)
     {
-      my $done = 0;
+      my @transfers = (@uploads, @downloads);
 
       debug_print("Reaper", "Finding $pid...\n");
 
-      for ($i = 0; $i <= $#uploads; $i++)
-        {
-	  $trans = $uploads[$i];
-
-	  if ($$trans{"pid"} == $pid)
+      foreach (@transfers)
+	{
+	  if ($$_{"pid"} == $pid)
 	    {
-	      $$trans{"pid"} = undef;
-	      kill_ul($napster_sock, $i);
-	      $done = 1;
-	      
-	      last;
+	      debug_print("Reaper", "Found entry: $_\n");
+
+	      if (isa($_, 'SnapLib::Upload'))
+		{ kill_ul($napster_sock, $_); }
+	      elsif (isa($_, 'SnapLib::Download'))
+		{ kill_dl($napster_sock, $_); }
+
+	      debug_print("Reaper", "$pid died...\n");
 	    }
          }
-
-      if (! $done)
-        {
-	  for ($i = 0; $i <= $#downloads; $i++)
-  	    { 
-	      $trans = $downloads[$i];
-	      
-	      if ($$trans{"pid"} == $pid)
-	        {
-		  $$trans{"pid"} = undef;
-		  kill_dl($napster_sock, $i);
-		  
-		  last;
-	        }
-	    }
-        }
-
-      debug_print("Reaper", "$pid died...\n");
     }      
   
   debug_print("Reaper", "Done reaping...\n");
@@ -436,7 +464,14 @@ sub warn_handler
   $SIG{__WARN__} = \&warn_handler;
 }
 
-############################### File Stuff #############################
+sub die_handler
+{
+  call_handler(MSG_SHUTDOWN, $napster_sock, $_[0]) if (! $^S);
+
+  $SIG{__DIE__} = \&die_handler;
+}
+
+################################# File Stuff ###############################
 
 sub eval_file
 {
@@ -447,12 +482,12 @@ sub eval_file
     {
       if (-e "$dir/$filename")
         {
-          $filename  = "$dir/$filename";
+          $filename = "$dir/$filename";
           last;
         }
     }
 
-  my $f = new FileHandle $filename;
+  my $f = new FileHandle "<$filename";
   my $cmd;
 
   if (defined $f)
@@ -461,10 +496,16 @@ sub eval_file
       $f->close();
     }
   else
-    { return; }
+    {
+      print "Error opening $filename: $!\n";
+
+      return;
+    }
 
   no strict;
   eval $cmd;
+
+  print "$@\n" if ($@);
 }
 
 ######################### Napster Initialization #######################
@@ -474,26 +515,26 @@ sub setup_new_connection
   if (defined $napster_sock)
     {
       $napster_sock->close();
+      delete $handles{$napster_sock};
     }
 
   $napster_sock = SnapLib::NapSocket->new($metaserver, $metaport,
 				       $host[0], $host[1], $REDIAL_DELAY);
 
+  $handles{$napster_sock} = { Handle => $napster_sock,
+			      Callback => \&check_napster };
+
   if (! defined $napster_sock)
     {
-      shutdown_prog($napster_sock, "Couldn't connect to server!\n");
+      call_handler(MSG_SHUTDOWN, $napster_sock, "Couldn't connect to server!\n");
     }
-
-  login_to_napster($napster_sock, $username, $password, $serverport, $speed);
 }
 
 sub login_to_napster
 {
   my $sock = shift;
-  my ($username, $password, $serverport, $speed) = @_;
   my $text;
   my $count = 0;
-  my $extension_str = join(", ", @extensions);
 
   if ($newuser)
     {
@@ -510,18 +551,11 @@ sub login_to_napster
 
       print "Logging in...\n";
 
-      $client = (! defined $extension_str) ? $CLIENT_ID : "$CLIENT_ID: $extension_str";
-
       debug_print("Login", "$username, $password, $serverport, $speed\n");
 
-      $text = "$username $password $serverport \"$client\" $speed";
+      $text = "$username $password $serverport \"$CLIENT_ID\" $speed";
       $sock->send(MSG_LOGIN, $text, 1);
     }
-}
-
-sub shutdown_server
-{
-  close($server_sock);
 }
 
 sub setup_server
@@ -538,118 +572,55 @@ sub setup_server
                                        Listen => SOMAXCONN,
                                        Reuse => 1);
 
+  $handles{$server_sock} = { Handle => $server_sock,
+			     Callback => \&setup_server_conn };
+
   if (! $server_sock)
     {
-      shutdown_prog($napster_sock, "Couldn't create server socket (someone using the port?).");
+      call_handler(MSG_SHUTDOWN, $napster_sock, 
+                   "Couldn't create server socket (someone using the port?).");
     }
 }
 
-################################# Main Code ##############################
-
-sub setup_screen
+sub shutdown_server
 {
-  my ($win, $input);
-  my $tieclass;
-
-  my $textwin;
-  my $cmdwin;
-  my ($scr_width, $scr_height);
-
-  if (defined %Curses::)
-    {      
-      initscr(); 
-      cbreak();
-      noecho();
-      
-  # This is a butt-ugly palette which tries to emulate the GUI palette
-  # to some degree... what Curses needs is the ability to store attributes
-  # in colour pairs...
-
-      if ($colours)
-        {
-          start_color();
-
-	  init_pair(1, COLOR_YELLOW, COLOR_BLACK);
-	  init_pair(2, COLOR_WHITE, COLOR_BLACK);    
-	  init_pair(3, COLR_BLUE, COLOR_BLACK);
-	  init_pair(4, COLOR_GREEN, COLOR_BLACK);
-	  init_pair(5, COLOR_RED, COLOR_BLACK);
-	  init_pair(6, COLOR_MAGENTA, COLOR_BLACK);
-	  init_pair(7, COLOR_MAGENTA, COLOR_BLACK);
-	  init_pair(8, COLOR_YELLOW, COLOR_BLACK);
-	  init_pair(9, COLOR_YELLOW, COLOR_BLACK);
-	  init_pair(10, COLOR_GREEN, COLOR_BLACK);
-	  init_pair(11, COLOR_GREEN, COLOR_BLACK);
-	  init_pair(12, COLOR_CYAN, COLOR_BLACK);
-	  init_pair(13, COLOR_BLUE, COLOR_BLACK);
-	  init_pair(14, COLOR_WHITE, COLOR_BLACK);
-	  init_pair(15, COLOR_WHITE, COLOR_BLACK);
-	  init_pair(16, COLOR_WHITE, COLOR_BLUE);
-        }
-      
-      getmaxyx($scr_height, $scr_width);
-      $textwin = subwin($scr_height-2, $scr_width, 0, 0);
-      $cmdwin = subwin(2, $scr_width, $scr_height-2, 0);
-      
-      attrset($cmdwin, COLOR_PAIR(16));
-      addstr($cmdwin, 0, 0, "-"x$scr_width);
-      attrset($cmdwin, COLOR_PAIR(2));
-      
-      ($win, $input) = (SnapLib::Window->new($textwin, $SCROLL_LENGTH),
-		      SnapLib::InputLine->new($cmdwin));
-      $tieclass = 'SnapLib::Window'; 
-
-      refresh($cmdwin);
-    }
-  else
-    {
-      local *H = *STDOUT;
-
-      $win = new SnapLib::StdWindow(*H);
-      $input = new SnapLib::StdinLine();
-      $tieclass = 'SnapLib::StdWindow';
-    }
-
-  tie *STDOUT, $tieclass, $win;
-      
-  return ($win, $input);   
+  close($server_sock);
 }
+
+################################# Misc Code ##############################
 
 sub shutdown_prog
 {
   my $sock = shift;
   my $message = shift;
-  my $trans;
-  my @transfers = @downloads;
-  push @transfers, @uploads;
+
+  while ($#uploads >= 0) { kill_ul($sock, 0); }
+  while ($#downloads >= 0) { kill_dl($sock, 0); }
+
+  if ($#hotlist >= 0)
+    {
+      my $file = new FileHandle ">$hotlist";
+
+      if (defined $file)
+        {
+	  foreach (@hotlist)
+	    { print $file "$_\n"; }
+      
+	  close $file;
+	}
+      else
+        {
+	  warn("Couldn't create hotlist: $!\n");
+        }
+    }
+
+  shutdown_server();
+  close($sock) if (defined $sock);
 
   debug_print("Shutdown", "Terminating...\n");
   debug_print("Shutdown", "Error: $message\n") if (defined $message);
 
   print STDERR "$message\n" if ($message);
-
-  foreach $trans (@transfers)
-    {
-      if (defined $$trans{"pid"})
-        {
-          debug_print("Shutdown", "Kill child $$trans{pid}...\n");
-          kill 2, $$trans{"pid"};
-        }
-    }
-
-  my $user;
-  my $file = new FileHandle ">$hotlist";
-
-  foreach $user (@hotlist)
-    {
-      print $file "$user\n";
-    }
-
-  close $file;
-
-  endwin() if (defined %Curses::);
-  shutdown_server();
-  close($sock) if (defined $sock);
 
   exit(0);
 }
@@ -727,6 +698,12 @@ sub write_cache_file
   my $cache = shift;
   my $file = new FileHandle ">$fname";
   my $entry;
+
+  if (! $file)
+    {
+      warn("Couldn't create cache file: $!\n");
+      return;
+    }
   
   foreach $entry (keys %$cache)
     {
@@ -859,7 +836,7 @@ Command-line params:
 
 -h           Display this help page.
 -m ip:port   Specify a metaserver to retrieve server ip/port from.
--s ip:port   Specify specific Napster server to connect to.  
+-s ip:port   Specify specific server to connect to.  
 -r float     Specifies the redial delay in seconds.  Can take fractional
              values (ie 0.1 == 1 tenth of a second). Default: 60s.
 -u name      Specify user name.
@@ -867,10 +844,15 @@ Command-line params:
 -o port      Specify local port number
 -i rcfile    Specify alternate rc file to load.
 -n           Register as new user.
--l logfile   Specify a logfile name.
 -d           Run in server mode (no interface).
--e string    Evaluate <string> as a Perl program during startup.
 -b           Disable colours (b/w mode).
+-e string    Evaluate <string> as a Perl program during startup.
+-f file      Executes <file> as a Perl program within Snap.
+
+-l logfile   Specify a logfile name for debug output.
+-t cb_type   Enable debug tracing for specified callback type.
+-c           Print available callback types.
+-w log_cat   Debug catagory to log.  Default: all.
 
 ';
 }
@@ -879,9 +861,23 @@ sub call_handler
 {
   my $cmd = shift;
 
+  if (defined $handler_trace{$cmd})
+    {
+      my @dump_data = split(/\n/, Dumper(\@_));
+      my @call_info = caller;
+      my $info = "$call_info[1] line $call_info[2]";
+      
+      debug_print("Callback", "$cmd ($handler_trace{$cmd}) called at $info:\n");
+
+      foreach (@dump_data)
+        {
+	  debug_print("Callback", "  $_\n");
+        }
+    }
+
   if (! defined $code_hash{$cmd})
     {
-      debug_print("Handler", "!! Unknown command: $cmd\n");
+      debug_print("Callback", "!! Unknown command: $cmd\n");
       return undef;    
     }
 
@@ -890,7 +886,10 @@ sub call_handler
       my @arr = @{ $code_hash{$cmd} };
       my $func;
       
-      foreach $func (@arr) { &$func(@_); }
+      foreach $func (@arr) 
+        { 
+	  &$func(@_); 
+        }
     }
   elsif (ref($code_hash{$cmd}) eq "CODE")
     {
@@ -903,23 +902,6 @@ sub call_handler
 }
 
 ################### Routines for processing server commands #################
-
-sub update_counts
-{
-  my ($sock, $text) = @_;
-  my ($libs, $total, $gigs);
-
-  $$text =~ s/(\d+) (\d+) (\d+)//g;
-  $total = $2; $libs = $1; $gigs = $3;   
-
-  return if (! isa($win[1]->{"window"}, 'Curses::Window'));
-
-  attrset($win[1]->{"window"}, COLOR_PAIR(16));
-  addstr($win[1]->{"window"}, 0, 0, "-- Songs: $total -- Libraries: $libs -- Gigs: $gigs ");
-  attrset($win[1]->{"window"}, COLOR_PAIR(2));
-
-  refresh($win[1]->{"window"});
-}
 
 sub send_file_list
 {
@@ -934,11 +916,9 @@ sub send_file_list
 
   foreach $file (keys %$cache)
     {
-      next if (-e $file);
-      next if ($file !~ /^\Q$upload\E/);
+      next if ((-e $file) && ($file =~ /^\Q$upload\E/));
 
-      debug_print("Cache", "Removing $file...\n");
-      
+      debug_print("Cache", "Removing $file...\n");      
       delete $$cache{$file};
     }
 
@@ -993,7 +973,9 @@ sub send_file_list
                                            "$$cache{$file}{time}");
     }
 
-  write_cache_file("$cachefile", $cache);
+  my @keys = keys %$cache;
+
+  write_cache_file("$cachefile", $cache) if ($#keys >= 0);
 }
 
 sub print_text
@@ -1012,7 +994,7 @@ sub get_search_result
   my ($sock, $text) = @_; 
   my %song;
 
-  $$text =~ /\"(.*)\" (.+?) (\d+?) (\d+?) (\d+?) (\d+?) (.+?) (\d+?) (\d)/;
+  $$text =~ /\"(.+?)\" (.+?) (\d+?) (\d+?) (\d+?) (\d+?) (.+?) (\d+?) (\d)/;
 
   $song{"name"} = $1;
   $song{"id"} = $2;
@@ -1027,7 +1009,7 @@ sub get_search_result
   if ((! defined $search_pattern) ||
       ($song{"name"} =~ /$search_pattern/))
     {
-      push @search_results, \%song;
+      push @search_results, \%song;      
     }
 }
 
@@ -1080,11 +1062,22 @@ sub get_error
 {
   my ($sock, $text) = @_; 
   my ($user, $file);
+  my $dl;
 
   $$text =~ /(.+?) (.+)/;
   $user = $1; $file = $2;
 
+  foreach (@downloads)
+    {
+      $dl = $_ if (($_->{"sentname"} eq $user) &&
+                   ($_->{"user"} eq $file));
+    }
+
+  @downloads = grep { $_ ne $dl } @downloads;
+
   print "Error getting $file from $user (perhaps he logged off).\n";
+
+  debug_print("DL", "Error getting $file from $user...\n");
 
   call_handler(MSG_DL_ERR, $sock, { 'sentname' => $file, 'user' => $user });
 }
@@ -1159,7 +1152,14 @@ sub setup_download
   if (! defined $$dl{"file"})
     {
       print "Error, couldn't create file: $download/$local_name.\n";
+
+      @downloads = grep { $_ ne $dl } @downloads;
+      delete $handles{$$dl{"socket"}};
+
+      debug_print("DL", "Error, couldn't create file: $download/$local_name.\n");
+
       call_handler(MSG_DL_ERR, $sock, $dl);
+
       return;
     }  
 
@@ -1186,6 +1186,8 @@ sub setup_download
 	  print "Firewalled user, unable to download...\n";
 
 	  pop @downloads;
+
+	  call_handler(MSG_DL_ERR, $sock, $dl);
         }
 
       return;
@@ -1201,12 +1203,17 @@ sub setup_download
         {
 	  print "Error opening download socket to $ip:$uport!\n";
 	  pop @downloads;
+
+	  call_handler(MSG_DL_ERR, $sock, $dl);
 	  return;
 	}
 
       fcntl($$dl{"socket"}, F_SETFL, O_NONBLOCK);
       $$dl{"socket"}->connect($uport, inet_aton($ip));
       fcntl($$dl{"socket"}, F_SETFL, 0);
+
+      $handles{$$dl{"socket"}} = { Handle => $$dl{"socket"},
+				   Callback => \&download_handshake };
 
       call_handler(MSG_DL_INIT, $sock, $dl);
     }
@@ -1224,11 +1231,12 @@ sub download_rejected
   foreach (@downloads)
     {
       $dl = $_ if (($_->{"sentname"} eq $filename) &&
-                   ($_->{"user"} eq $user) &&
-                   ($_->{"size"} eq $size));
+                   ($_->{"user"} eq $user));
     }
 
   print "Download from $user for $filename rejected...\n";
+
+  @downloads = grep { $_ ne $dl } @downloads;
 
   call_handler(MSG_DL_ERR, $sock, $dl);
 }
@@ -1326,11 +1334,13 @@ sub setup_upload
   $upload{"socket"} = undef;
   $upload{"type"} = "UPLOAD";
 
-  if (defined $ul_speed) { $upload{"limit"} = $ul_speed; }
+  if ($ul_speed >= 0) { $upload{"limit"} = $ul_speed; }
 
   push @uploads, \%upload;
 
   $sock->send(MSG_UPLOAD_ACK, $$text);
+
+  call_handler(MSG_UL_INIT, $sock, \%upload);
 }
 
 sub start_alt_upload
@@ -1372,6 +1382,11 @@ sub start_alt_upload
   if (! defined $$upload{"file"})
     {
       print "Couldn't open upload file: $::upload$filename.\n";
+
+      @uploads = grep { $_ ne $upload } @uploads;
+
+      call_handler(MSG_UL_ERR, $sock, $upload);
+
       return;
     }  
 
@@ -1382,6 +1397,11 @@ sub start_alt_upload
   if (! $$upload{"socket"}->socket(PF_INET, SOCK_STREAM, $proto))
     {
       print "Error, couldn't create upload socket to $ip:$port!\n";      
+
+      @uploads = grep { $_ ne $upload } @uploads;
+
+      call_handler(MSG_UL_ERR, $sock, $upload);
+
       return;
     }
 
@@ -1392,7 +1412,8 @@ sub start_alt_upload
   debug_print("UL", "New ALT UL to $user ($ip:$port), $filename.\n");
   print "New ALT Upload to $user for $filename...\n";
 
-  call_handler(MSG_UL_INIT, $sock, $upload);
+  $handles{$$upload{"socket"}} = { Handle => $$upload{"socket"},
+				   Callback => \&upload_handshake };
 }
 
 sub join_channel
@@ -1773,28 +1794,27 @@ sub send_queued_request
 
   return if ($#download_queue < 0);
 
-  my $entry = $download_queue[0];
-  my $user = $entry->{"user"};  
+  my $entry = shift @download_queue;
+  my $user = $entry->{"user"};
   my $filename = $entry->{"name"};
   my $textstr = "$user \"$filename\"";
   my ($msg, $len);
 
   debug_print("DL", "Sending queued request... user = $user, filename = $filename\n");
-  print "Sending queued request to $user for $filename...\n";
 
   push @downloads, { "sentname" => $filename, "user" => $user };
-
   $sock->send(MSG_DL_REQ, $textstr);
+
+  $queue_transferring = 1;
+  $queue_current = $entry;
 }
 
 sub queued_download_end
 {
   my ($sock, $dl) = @_;
 
-  if ($download_queue[0]->{"name"} eq $dl->{"sentname"})
+  if ($queue_current->{"name"} eq $dl->{"sentname"})
     { 
-      shift @download_queue;
-
       if ($#download_queue < 0)
         {
           $queue_transferring = 0;
@@ -1811,8 +1831,8 @@ sub queued_download_end
 sub do_quit
 {
   my ($sock, $param_str, @params) = @_;
-
-  shutdown_prog($sock);
+  
+  call_handler(MSG_SHUTDOWN, $sock);
 }
 
 sub do_clear_results
@@ -1854,7 +1874,8 @@ sub do_search
               "speed" => 1,
               "bitrate" => 1,
               "freq" => 1,
-              "regex" => 1);
+              "regex" => 1,
+              "type" => 1);
 
   return if ($#params < 0);
   my $results = getopts(\%opts, \@params);
@@ -1866,6 +1887,7 @@ sub do_search
   my $speed = shift @{ $results->{"speed"} };
   my $bitrate = shift @{ $results->{"bitrate"} };
   my $freq = shift @{ $results->{"freq"} };
+  my $type = shift @{ $results->{"type"} };
   $search_pattern = shift @{ $results->{"regex"} };
 
   my @speed_params = get_search_type($speed);
@@ -1879,6 +1901,7 @@ sub do_search
   $textstr .= "LINESPEED \"$speed_params[1]\" $speed_params[0] " if (defined $speed);
   $textstr .= "BITRATE \"$bitrate_params[1]\" \"$bitrate_params[0]\" " if (defined $bitrate);
   $textstr .= "FREQ \"$freq_params[1]\" \"$freq_params[0]\" " if (defined $freq);
+  $textstr .= "TYPE $type " if (defined $type);
 
   $textstr = substr($textstr, 0, -1);
 
@@ -1901,12 +1924,12 @@ sub do_search_help
   &$print("    -FREQ <num><mod>    - Limit frequency to <num>.\n");
   &$print("    -SPEED <num><mod>   - User connection speed equals <num>.\n");
   &$print("    -COUNT <num>        - Limit count to <num> (max 100).\n");
-  &$print("    -REGEX \"<pattern>\"  - Filter search results according to <pattern>.\n\n");
+  &$print("    -REGEX \"<pattern>\"  - Filter search results according to <pattern>.\n");
+  &$print("    -TYPE <mime>        - File type specification.  (OpenNap only)\n\n");
   &$print("    Where <mod> is a modifier:\n\n");
   &$print("      <none> - EQUAL TO search.\n");
   &$print("      +      - AT LEAST search.\n");
   &$print("      -      - AT BEST search.\n\n");
-  &$print("  Options can be combined in any order.\n\n");
 
   return $text;
 }
@@ -1957,7 +1980,7 @@ sub do_filter
         {
           $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
 
-          print "~2; " . $i + 1 . " " .
+          print "~2; " . ($i + 1) . " " .
                           "$2 " .
                           sprintf("%.2f", $$song{"size"}/1000000) . "mb " .
                           "$$song{bitrate} $$song{frequeny} $$song{user} " .                      
@@ -2033,7 +2056,7 @@ sub do_send_download_request
           my $textstr = "$user \"$filename\"";
           my ($msg, $len);
           
-          debug_print("DL", "Sending request... entry = $entry, user = $user, filename = $filename\n");
+          debug_print("DL", "Sending request for entry $entry... entry = $entry, user = $user, filename = $filename\n");
           print "Sending request to $user for $filename...\n";
 
           push @downloads, { "sentname" => $filename, "user" => $user };
@@ -2146,9 +2169,9 @@ sub do_upload_list
 	}
 
       $filename .= " " x (30 - length($filename)) if (length($filename) <= 40);
-      $filename = substr($filename, 0, 30) if (length($filename) > 40);
+      $filename = substr($filename, -30) if (length($filename) > 40);
 
-      print "$count. $filename: $$up{sent} ($$up{size}), $$$up{speed} Kb/s, $time left\n";
+      print "$count. $filename: $$up{sent} ($$up{size}), $$up{speed} Kb/s, $time left\n";
       $count++;
     }
 }
@@ -2170,7 +2193,7 @@ sub do_upload_op
     {
       my $speed_ul = shift @{ $results->{"speed"} };
       my $speed = shift @{ $results->{"speed"} };
-      my $ul = $uploads[$speed_ul];
+      my $ul = $uploads[$speed_ul - 1];
 
       if ((! defined $ul) && (defined $speed_ul))
         {
@@ -2178,6 +2201,8 @@ sub do_upload_op
         }
       else
         {  
+	  debug_print("UL", "Attempting to set upload $speed_ul to $speed b/s\n");
+
           print { $$ul{"write"} } "LIMIT $speed\n" if (defined $speed);
         }
     }
@@ -2195,11 +2220,11 @@ sub do_ul_help
   my $print = sub { my $i = shift; $text .= "~2;$i~c;"; };
 
   &$print("Usage: /ul <command>\n\n");
-  &$print("  Performs some operation on upload number <num>.\n");
-  &$print("  Upload numbers correspond to those from the /ustatus command.\n\n");
+  &$print("  Performs an operation on some upload(s).\n");
+  &$print("  Upload numbers correspond to those from the /ulist command.\n\n");
   &$print("  Commands:\n");
   &$print("    -KILL  <ul1> <ul2> ... - Kill the transfers specified\n");
-  &$print("    -SPEED <num>           - Set transfer speed to <num> b/s\n\n");
+  &$print("    -SPEED <ul> <rate>     - Set transfer speed for <ul> to <rate> b/s\n\n");
 
   return $text;
 }
@@ -2226,7 +2251,13 @@ sub do_download_op
 	  next;
         }
       
-      kill_dl($sock, $entry - 1) if (defined $dl);
+      if (defined $dl)
+        {
+          my $fname = "$download/$$dl{filename}";
+
+          system("rm", "$fname");
+          kill_dl($sock, $entry - 1);
+        }
     }
 }
 
@@ -2236,7 +2267,7 @@ sub do_dl_help
   my $print = sub { my $i = shift; $text .= "~2;$i~c;"; };
 
   &$print("Usage: /dl <command>\n\n");
-  &$print("  Performs some operation on download number <num>.\n");
+  &$print("  Performs some operation on some download(s).\n");
   &$print("  Download numbers correspond to those from the /dlist command.\n\n");
   &$print("  Commands:\n");
   &$print("    -KILL <dl1> <dl2> ... - Kill the transfers specified.\n\n");
@@ -2256,46 +2287,19 @@ sub do_eval
 
   if (defined $filename)
     {
-      my $dir;
-
-      foreach $dir (@SCRIPT_PATH)
-        {
-          if (-e "$dir/$filename")
-            {
-              $filename = "$dir/$filename";
-              last;
-            }
-        }
-
-      my $file = new FileHandle $filename;
-
-      if (! defined $file)
-        {
-          print "Error opening file: $params[1]\n";
-          return;
-        }
-
-      $cmd = join(" ", <$file>);
-      $file->close();
+      eval_file($filename);
     }
   else  
     {
-      $cmd = join(" ", $param_str);
+      my $cmd = join(" ", $param_str);
+
+      eval "$cmd";
+      
+      if (defined $@)
+        {
+	  print "$@";
+        }
     }
-
-  eval "$cmd";
-
-  if (defined $@)
-    {
-      print "$@";
-    }
-}
-
-sub do_clear
-{
-  my ($sock, $param_str, @params) = @_;
-
-  $win[0]->clear;
 }
 
 sub do_reconnect
@@ -2469,20 +2473,6 @@ sub do_hotlist_help
   return $text;
 }
 
-sub do_page_up
-{
-  my ($sock, $param_str, @params) = @_;
-
-  $win[0]->page_up;
-}
-
-sub do_page_down
-{
-  my ($sock, $param_str, @params) = @_;
-
-  $win[0]->page_down;
-}
-
 sub do_about
 {
   my ($sock, $param_str, @params) = @_;
@@ -2538,10 +2528,7 @@ sub do_help_help
   foreach $cmd (sort(keys %help_hash))
     {
       my $cmd_text = $cmd . " " x (20 - length($cmd));
-      my $width;
-      
-      if (defined $win[0]) { $width = $win[0]->width(); }
-      else                 { $width = 80; }
+      my $width = 80;
       
       if (length($line) + length($cmd_text) < $width - 4)
         {
@@ -2941,7 +2928,7 @@ sub do_queue
         }
 
       chop($param_str);
-      
+
       my @entry_list = split(/[^\d\-]+/, $param_str);
       my @number_list;
   
@@ -2983,7 +2970,7 @@ sub do_queue
             {
               my $user = $search_results[$entry - 1]->{"user"};
               my $name = $search_results[$entry - 1]->{"name"};
-              
+
               my %queue_entry = ( "user" => $user,
                                   "name" => $name );
               
@@ -2992,8 +2979,6 @@ sub do_queue
         }
       
       send_queued_request($sock) if (! $queue_transferring);
-      
-      $queue_transferring = 1;
     }
   
   if (defined $results->{"list"})
@@ -3030,14 +3015,14 @@ sub do_queue
     {
       my $entry = pop @{ $results->{"del"} };
       
-      if (($entry > $#download_queue) ||
+      if (($entry > ($#download_queue + 1)) ||
 	  ($entry < 1))
         {
 	  print "Queue entry $entry doesn't exist...\n";
 	  next;
         }
 
-      splice(@download_queue, $entry, 1);
+      splice(@download_queue, $entry - 1, 1);
 
       print "Removed entry $entry from download queue...\n";
     }
@@ -3062,6 +3047,9 @@ sub do_queue_help
 sub do_alias
 {
   my ($sock, $param_str, @params) = @_;
+  my $cmd = shift @params;
+
+  $param_str =~ s/^$cmd\s+//g;
 
   if ($#params < 1)
     {
@@ -3069,9 +3057,9 @@ sub do_alias
       return;
     }
 
-  $command_hash{"/$params[0]"} = $params[1];
+  $command_hash{"/$cmd"} = $param_str;
 
-  print "Aliasing \"/$params[0]\" -> \"$params[1]\"\n";
+  print "Aliasing \"/$cmd\" -> \"$param_str\"\n";
 }
 
 sub do_alias_help
@@ -3080,9 +3068,8 @@ sub do_alias_help
   my $print = sub { my $i = shift; $text .= "~2;$i~c;"; };
 
   &$print("Usage: /alias <command> <target>s\n\n");
-  &$print("  Set up a command alias.  Note, in the target, if you wish\n");
-  &$print("  to have spaces, you must quote the command.  eg\n\n");
-  &$print("    /alias dk \"/dl -kill\"\n\n");
+  &$print("  Set up a command alias.  eg\n\n");
+  &$print("    /alias dk /dl -kill\n\n");
 
   return $text;
 }
@@ -3149,53 +3136,82 @@ sub do_command
 
 sub kill_dl
 {  
-  my ($sock, $dnum) = @_;
+  my ($sock, $dl_entry) = @_;
 
-  return if (! defined $dnum);
+  return if (! defined $dl_entry);
 
-  debug_print("DL", "Attempting to kill download number $dnum...\n");
-
-  if (defined $downloads[$dnum])
+  if (! isa($dl_entry, 'SnapLib::Download'))
     {
-      my $dl = $downloads[$dnum];
-
-      splice(@downloads, $dnum, 1);
-      if (defined $$dl{"pid"}) { kill 2, $$dl{"pid"}; }
-
-      print "Killed download number " . ($dnum + 1) . "...\n";
-      debug_print("DL", "Killed download number " . ($dnum + 1) . "...\n");
-
-      $sock->send(MSG_DONE_DOWNLOADING);
-
-      call_handler(MSG_DL_END, $sock, $dl);
+      if (defined $downloads[$dl_entry])
+	{
+	  my $dl = $downloads[$dl_entry];
+	  
+	  splice(@downloads, $dl_entry, 1);
+	  if (defined $$dl{"pid"}) { kill 2, $$dl{"pid"}; }
+	  
+	  delete $handles{$$dl{"socket"}} if (defined $$dl{"socket"});
+	  delete $handles{$$dl{"read"}} if (defined $$dl{"read"});
+	  
+	  print "Killed download number " . ($dl_entry + 1) . "...\n";
+	  debug_print("DL", "Killed download number " . ($dl_entry + 1) . "...\n");
+	  
+	  $sock->send(MSG_DONE_DOWNLOADING);
+	  
+	  call_handler(MSG_DL_END, $sock, $dl);
+	}
+      else
+	{
+	  print "No such download entry!\n";
+	}
     }
   else
     {
+      my $i;
+
+      for ($i = 0; $i <= $#downloads; $i++)
+	{
+	  kill_dl($sock, $i) if ($downloads[$i] eq $dl_entry);
+	}
     }
 }
 
 sub kill_ul
 {
-  my ($sock, $unum) = @_;
+  my ($sock, $ul_entry) = @_;
 
-  return if (! defined $unum);
+  return if (! defined $ul_entry);
 
-  if (defined $uploads[$unum])
+  if (! isa($ul_entry, 'SnapLib::Upload'))
     {
-      my $ul = $uploads[$unum];
+      if (defined $uploads[$ul_entry])
+	{
+	  my $ul = $uploads[$ul_entry];
+	  
+	  splice(@uploads, $ul_entry, 1);
+	  if (defined $$ul{"pid"}) { kill 2, $$ul{"pid"}; }
+	  
+	  delete $handles{$$ul{"socket"}} if (defined $$ul{"socket"});
+	  delete $handles{$$ul{"read"}} if (defined $$ul{"read"});
+	  
+	  print "Killed upload number " . ($ul_entry + 1) . "...\n";
+	  debug_print("UL", "Killed upload $ul_entry...\n");
+	  $sock->send(MSG_DONE_UPLOADING);
 
-      splice(@uploads, $unum, 1);
-      if (defined $$ul{"pid"}) { kill 2, $$ul{"pid"}; }
-
-      print "Killed upload number " . ($unum + 1) . "...\n";
-      debug_print("UL", "Killed upload $unum...\n");
-      $sock->send(MSG_DONE_UPLOADING);
-
-      call_handler(MSG_UL_END, $sock, $ul);
+	  call_handler(MSG_UL_END, $sock, $ul);
+	}
+      else
+	{
+	  print "No such upload entry!\n";
+	}
     }
   else
     {
-      print "No such upload entry!\n";
+      my $i;
+
+      for ($i = 0; $i <= $#uploads; $i++)
+	{
+	  if ($uploads[$i] eq $ul_entry) { kill_ul($sock, $i); }
+	}
     }
 }
 
@@ -3227,20 +3243,39 @@ sub download_handshake
 
       if (($len == 0) || (! defined $len))
         {
-	  call_handler(MSG_DL_ERR, $sock, $dl);
 	  @downloads = grep { $_ ne $dl } @downloads;
+          delete $handles{$$dl{"socket"}};
+	  call_handler(MSG_DL_ERR, $sock, $dl);
+
 	  return;
         }
       
       my $msg = "GET";
-      $$dl{"socket"}->syswrite($msg, length($msg));
+
+      if ($$dl{"socket"}->syswrite($msg, length($msg)) eq undef)
+	{
+	  @downloads = grep { $_ ne $dl } @downloads;
+          delete $handles{$$dl{"socket"}};
+	  call_handler(MSG_DL_ERR, $sock, $dl);
+
+	  return;
+	}
+
       debug_print("DL", "Sending $msg\n");
-	
+
       $msg = "$username \"" . $$dl{"sentname"} . "\" $$dl{pos}";
-      $$dl{"socket"}->syswrite($msg, length($msg));
-      
+
+      if ($$dl{"socket"}->syswrite($msg, length($msg)) eq undef)
+	{
+	  @downloads = grep { $_ ne $dl } @downloads;
+          delete $handles{$$dl{"socket"}};
+	  call_handler(MSG_DL_ERR, $sock, $dl);
+
+	  return;
+	}
+
       debug_print("DL", "Sending $msg\n");
-      
+
       $$dl{"status"} = 1;
       return;
     }
@@ -3251,13 +3286,26 @@ sub download_handshake
 
       if (($len == 0) || (! defined $len))
         {
-	  call_handler(MSG_DL_ERR, $sock, $dl);
 	  @downloads = grep { $_ ne $dl } @downloads;
+          delete $handles{$$dl{"socket"}};
+	  call_handler(MSG_DL_ERR, $sock, $dl);
+
 	  return;
         }
 
-      return if ($$dl{"buffer"} ne $$dl{"size"});
-      
+      return if (length($$dl{"buffer"}) < length($$dl{"size"}));
+
+      if ($$dl{"buffer"} != $$dl{"size"})
+	{
+	  print "Error, size received is incorrect!\n";
+
+	  @downloads = grep { $_ ne $dl } @downloads;
+          delete $handles{$$dl{"socket"}};
+	  call_handler(MSG_DL_ERR, $sock, $dl);
+
+	  return;
+	}
+
       print "Transferring $$dl{filename}...\n";
       debug_print("DL", "Transferring $$dl{filename}...\n");
 
@@ -3265,15 +3313,15 @@ sub download_handshake
       $$dl{"status"} = 2;
     }
 
-  $downloads[$dnum] = SnapLib::Download->new($$dl{"socket"}, 
-					     $$dl{"file"},
-					     $$dl{"local_name"},
-					     $$dl{"sentname"},
-					     $$dl{"size"});
+  delete $handles{$$dl{"socket"}};
 
+  SnapLib::Download->new($dl);
+
+  $handles{$$dl{"read"}} = { Handle => $$dl{"read"},
+			     Callback => \&transfer_cmd };
+
+  call_handler(MSG_DL_START, $sock, $dl);
   $sock->send(MSG_DOWNLOADING);
-
-  call_handler(MSG_DL_START, $sock, $dl, $downloads[$dnum]);
 }
 
 sub upload_handshake
@@ -3309,17 +3357,36 @@ sub upload_handshake
       if (($len == 0) || (! defined $len))
         {
 	  @uploads = grep { $_ ne $up } @uploads;
+          delete $handles{$$up{"socket"}};
 	  call_handler(MSG_UL_ERR, $sock, $up);
+
 	  return;
         }
 
-      $$up{"socket"}->syswrite("SEND", length("SEND"));          
+      if ($$up{"socket"}->syswrite("SEND", length("SEND")) eq undef)
+	{
+	  @uploads = grep { $_ ne $up } @uploads;
+          delete $handles{$$up{"socket"}};
+	  call_handler(MSG_UL_ERR, $sock, $up);
+
+	  return;
+	}
+
       debug_print("UL", "Sending SEND...\n");
 
       my $msg = "$username \"$$up{sentname}\" $$up{size}";          
-      $$up{"socket"}->syswrite($msg, length($msg));          
+
+      if ($$up{"socket"}->syswrite($msg, length($msg)) eq undef)
+	{
+	  @uploads = grep { $_ ne $up } @uploads;
+          delete $handles{$$up{"socket"}};
+	  call_handler(MSG_UL_ERR, $sock, $up);
+
+	  return;
+	}
+
       debug_print("UL", "Sending info... $msg\n");
-      
+
       $$up{"status"} = 5;
       return;
     }
@@ -3332,23 +3399,24 @@ sub upload_handshake
       if (($len == 0) || (! defined $len))
         {
 	  @uploads = grep { $_ ne $up } @uploads;
+          delete $handles{$$up{"socket"}};
 	  call_handler(MSG_UL_ERR, $sock, $up);
+
 	  return;
         }
 
       debug_print("UL", "Got upload position: $$up{pos}\n");
     }
 
-  $uploads[$unum] = SnapLib::Upload->new($$up{"socket"},
-					 $$up{"file"},
-					 $$up{"filename"},
-					 $$up{"size"},
-					 $$up{"pos"},
-                                         $$up{"user"});
+  delete $handles{$$up{"socket"}};
+
+  SnapLib::Upload->new($up);
+
+  $handles{$$up{"read"}} = { Handle => $$up{"read"},
+                             Callback => \&transfer_cmd };
 
   $sock->send(MSG_UPLOADING);
-
-  call_handler(MSG_UL_START, $sock, $up, $uploads[$unum]);
+  call_handler(MSG_UL_START, $sock, $up);
 }
 
 sub transfer_cmd
@@ -3409,7 +3477,7 @@ sub transfer_cmd
 
 sub setup_server_conn
 {
-  my $sock = shift;
+  my ($napsock, $sock) = @_;
   my ($socket, $addr) = $sock->accept();
   my ($port, $iaddr) = sockaddr_in($addr);
   my ($a, $b, $c, $d) = unpack('C4', $iaddr);
@@ -3423,14 +3491,17 @@ sub setup_server_conn
 
   push @connections, \%new_conn;
 
-  handle_server_request($socket);
+  handle_server_request($napsock, $socket);
 
   call_handler(MSG_SERVER_CONN, $sock, \%new_conn);
+
+  $handles{$socket} = { Handle => $socket,
+			Callback => \&handle_server_request };
 }
 
 sub handle_server_request
 {
-  my ($socket) = @_;
+  my ($napsock, $socket) = @_;
   my ($conn_entry, $conn);
   my $conn_num = 0;
   my $dl;
@@ -3454,7 +3525,19 @@ sub handle_server_request
       debug_print("Server", "Connect from $$conn{ip}, sending ack...\n");
       print "Connect from $$conn{ip}...\n";
 
-      $$conn{"socket"}->syswrite("1", 1);
+      if ($$conn{"socket"}->syswrite("1", 1) eq undef)
+	{
+	  @connections = grep {$_ ne $conn_num} @connections;
+	  delete $handles{$$conn{"socket"}};
+
+	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);	  
+
+          debug_print("Server", "Connection error, shutting down...\n");
+          print "Connection error, shutting down...\n";
+
+          return;
+	}
+
       $$conn{"status"} = 1;
     }
   elsif ($$conn{"status"} == 1)
@@ -3465,11 +3548,14 @@ sub handle_server_request
 
       if ($len == 0)
         {
-	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);
-	  
-          splice(@connections, $conn_num, 1);
+	  @connections = grep {$_ ne $conn_num} @connections;
+	  delete $handles{$$conn{"socket"}};
+
+	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);	  
+
           debug_print("Server", "Connection error, shutting down...\n");
           print "Connection error, shutting down...\n";
+
           return;
         }
 
@@ -3477,6 +3563,20 @@ sub handle_server_request
         {
           my ($data, $len);
           $len = $$conn{"socket"}->sysread($data, 1);
+
+	  if ($len == 0)
+	    {
+	      @connections = grep {$_ ne $conn_num} @connections;
+	      delete $handles{$$conn{"socket"}};
+	      
+	      call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);	  
+	      
+	      debug_print("Server", "Connection error, shutting down...\n");
+	      print "Connection error, shutting down...\n";
+	      
+	      return;	      
+	    }
+
           $line .= $data;
         }
 
@@ -3491,17 +3591,19 @@ sub handle_server_request
 
       $len = $$conn{"socket"}->sysread($data, 1024);
 
-      $data =~ /(.+?) "(.+?)" (\d+)/;
-
       if ($len == 0)
         {
+	  @connections = grep {$_ ne $conn} @connections;
+	  delete $handles{$$conn{"socket"}};
+
 	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);
 
-          splice(@connections, $conn_num, 1);
           debug_print("Server", "Connection error, shutting down...\n");
           print "Connection error, shutting down...\n";
           return;
         }
+
+      $data =~ /(.+?) "(.+?)" (\d+)/;
 
       my $up;
       my $username = $1;
@@ -3527,25 +3629,26 @@ sub handle_server_request
               $$up{"file"} = FileHandle->new("$upload/$$up{filename}");
               $$up{"size"} = $stat_info[7];
 
-	      $$up{"socket"}->syswrite("$$up{size}", length("$$up{size}"));
+	      if ($$up{"socket"}->syswrite("$$up{size}", length("$$up{size}")) eq undef)
+		{
+		  @uploads = grep { $_ ne $up } @uploads;
+		  delete $handles{$$up{"socket"}};
+		  call_handler(MSG_UL_ERR, $sock, $up);
+		  
+		  return;		  
+		}
 
-	      $up = SnapLib::Upload->new($$up{"socket"},
-			 		 $$up{"file"},
-					 $$up{"filename"},
-					 $$up{"size"},
-				 	 $$up{"pos"},
-                                         $$up{"user"});
+	      SnapLib::Upload->new($up);
 
 	      $napster_sock->send(MSG_UPLOADING);
 
               splice(@connections, $conn_num, 1);
+	      delete $handles{$$conn{"socket"}};
 
-              $$conn{"filename"} = $$up{"filename"};
-              $$conn{"size"} = $$up{"size"};
-              $$con{"received"} = $$up{"received"};
+	      call_handler(MSG_UL_START, $sock, $up);
 
-	      call_handler(MSG_UL_INIT, $sock, $conn);
-	      call_handler(MSG_UL_START, $sock, $conn, $up);
+	      $handles{$$up{"read"}} = { Handle => $$up{"read"},
+					 Callback => \&transfer_cmd };
 
 	      $found = $TRUE;
 	    }
@@ -3554,7 +3657,9 @@ sub handle_server_request
       if (! $found)
         {
 	  debug_print("Server", "Couldn't find matching upload!\n");    
-	  splice(@connections, $conn_num, 1);
+
+	  @connections = grep {$_ ne $conn} @connections;
+	  delete $handles{$$conn{"socket"}};
 
 	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);
         }
@@ -3565,6 +3670,17 @@ sub handle_server_request
       my $found = $FALSE;
 
       $len = $$conn{"socket"}->sysread($line, 1024);
+
+      if ($len == 0)
+	{
+	  @connections = grep {$_ ne $conn} @connections;
+	  delete $handles{$$conn{"socket"}};	  
+
+	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);
+
+          debug_print("Server", "Connection error, shutting down...\n");
+          print "Connection error, shutting down...\n";
+	}
 
       debug_print("Server", "Got an upload message: $line\n");
 
@@ -3593,42 +3709,40 @@ sub handle_server_request
               $$dl{"socket"} = $$conn{"socket"};
               debug_print("Server", "Upload established\n");
               
-              $$dl{"socket"}->syswrite("$$dl{pos}", length($$dl{"pos"}));
+              if ($$dl{"socket"}->syswrite("$$dl{pos}", length($$dl{"pos"})) eq undef)
+		{
+		  @downloads = grep { $_ ne $dl } @downloads;
+		  delete $handles{$$dl{"socket"}};
+		  call_handler(MSG_DL_ERR, $sock, $dl);
+		  
+		  return;
+		}
 
-	      $dl = SnapLib::Download->new($$dl{"socket"},
-					   $$dl{"file"},
-					   $$dl{"local_name"},
-					   $$dl{"sentname"},
-					   $$dl{"size"});
+	      SnapLib::Download->new($dl);
 
               splice(@connections, $conn_num, 1);
+	      delete $handles{$$conn{"socket"}};
 
               $napster_sock->send(MSG_DOWNLOADING);
 
-	      call_handler(MSG_DL_INIT, $sock, $old_dl);
-	      call_handler(MSG_DL_START, $sock, $old_dl, $dl);
+	      call_handler(MSG_DL_INIT, $sock, $dl);
+	      call_handler(MSG_DL_START, $sock, $dl);
+
+	      $handles{$$dl{"read"}} = { Handle => $$dl{"read"},
+					 Callback => \&transfer_cmd };
             }
         }
 
       if (! $found)
         {
 	  debug_print("Server", "Couldn't find matching download!\n");
-	  splice(@connections, $conn_num, 1);	  
 
+	  delete $handles{$$conn{"socket"}};
+
+	  @connections = grep {$_ ne $conn} @connections;
 	  call_handler(MSG_SERVER_CONN_ERR, $sock, $conn);
         }
     }
-}
-
-sub check_keyboard
-{
-  my ($sock) = @_;
-  my $ch;
-
-  $win[1]->getchar($ch);
-  return if ($win[1]->line_available() == $FALSE);
-
-  do_command($sock, $win[1]->getline());
 }
 
 sub check_napster
@@ -3640,6 +3754,7 @@ sub check_napster
   
   if (! defined $cmd)
     {
+      delete $handles{$sock};
       call_handler(MSG_DISCONNECT);
       return;
     }
@@ -3649,100 +3764,24 @@ sub check_napster
 
 sub wait_for_input
 {
-  my ($sock, $server) = @_;
-
-  my ($dl, $up, $conn);
+  my @ready;
   my $s = new IO::Select;
 
-  my (@ready, $handle);
-  my %handle_hash;
+  foreach (keys %handles)
+    { $s->add($handles{$_}->{Handle}); }
 
-  $handle_hash{$sock} = "NAP" if (defined $sock);
-  $handle_hash{$server} = "SERVER" if ($serverport);
-  $handle_hash{\*STDIN} = "KEY" if (! $daemon);
+  @ready = IO::Select->select($s, undef, undef);  
 
-  $s->add($sock) if (defined $sock);
-  $s->add(\*STDIN) if (! $daemon);
-  $s->add($server) if ($serverport);
-
-  foreach $dl (@downloads)
-    {
-      if (defined $$dl{"socket"})
-        {
-          $handle_hash{$$dl{"socket"}} = "DL";      
-          $s->add($$dl{"socket"});
-        }
-      elsif (defined $$dl{"read"})
-        {
-          $handle_hash{$$dl{"read"}} = "TRANS";
-          $s->add($$dl{"read"});          
-        }
-    }  
-
-  foreach $up (@uploads)
-    {
-      if (defined $$up{"socket"})
-        {
-          $handle_hash{$$up{"socket"}} = "UL";
-          $s->add($$up{"socket"});
-        }
-      elsif (defined $$up{"read"})
-        {
-          $handle_hash{$$up{"read"}} = "TRANS";
-          $s->add($$up{"read"});
-        }
+  foreach (@{ $ready[0] })
+    { 
+      $handles{$_}->{Callback}->($napster_sock, $_) if (defined $handles{$_});
     }
-
-  foreach $conn (@connections)
-    {
-      $handle_hash{$$conn{"socket"}} = "CONN";
-      $s->add($$conn{"socket"});
-    }
-
-  @ready = IO::Select->select($s, undef, undef, $POLL_DELAY);  
-
-# Any better way to do this?  It works, but... yuck... :)
-
-  foreach $handle (@{ $ready[0] })
-    {
-      if ($handle_hash{$handle} eq "NAP")
-        {
-          check_napster($sock);
-        }
-      elsif ($handle_hash{$handle} eq "KEY")
-        {
-          check_keyboard($sock);
-        }
-      elsif ($handle_hash{$handle} eq "DL")
-        {
-          download_handshake($sock, $handle);
-        }
-      elsif ($handle_hash{$handle} eq "UL")
-        {
-          upload_handshake($sock, $handle);
-        }
-      elsif ($handle_hash{$handle} eq "SERVER")
-        {
-	  setup_server_conn($server);
-        }
-      elsif ($handle_hash{$handle} eq "CONN")
-        {
-          handle_server_request($handle);
-        }
-      elsif ($handle_hash{$handle} eq "TRANS")
-        {
-          transfer_cmd($sock, $handle);
-        }
-    }
-
-  foreach $func (@poll_funcs) # Check polled functions
-    { &$func($napster_sock); }
 }
 
 sub main_loop
 {
   while(1)
-    { wait_for_input($napster_sock, $server_sock); }
+    { wait_for_input(); }
 }
 
 

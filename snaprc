@@ -5,53 +5,88 @@
 # demonstrates many of the things you can do with a Snap RC file, like
 # module loading and startup functions.
 #
+# See the function at the end of this script for startup commands.
+#
 
-# Uncomment to load the GTK module
+my $SNAP_HOME = "$ENV{HOME}/snap";
 
-# do 'SnapGtk.pl';
+# Load interface script(s).
 
-# This line causes the function "startup_code" to be executed after
-# a correct log in.  It's a nice way to load code at startup, but
-# after initial application setup.
-
-push @{ $code_hash{&MSG_LOGIN_ACK} }, \&startup_code;
+# eval_file('Gtk.pl');
+# eval_file('Curses.pl');
+eval_file('Plain.pl');
 
 #
 # Add a personal script directory to the scripts path.
+# You can add additional script directories here.
 #
 
-push @SCRIPT_PATH, "$ENV{HOME}/snap/scripts";
+push @SCRIPT_PATH, "$SNAP_HOME/scripts";
 
+############################# User Settings ##############################
 #
-# Now for the setup information.
+# The following is all of the user-level settings.  Please changed these
+# to your desired settings.
+#
+# Speed index for linespeed variable:
+#
+# 0  - unknown
+# 1  - 14.4
+# 2  - 28.8
+# 3  - 33.6
+# 4  - 56.7
+# 5  - 64K
+# 6  - 128K
+# 7  - Cable
+# 8  - DSL
+# 9  - T1
+# 10 - T3+
 #
 
-$username = "username";
-$password = "password";
+$username = 'username';
+$password = 'password';
+$email = 'anon@napster.com';
+$speed = 7;                   
 
-$serverport = 6699;
-$speed = 7;                    # Speed corresponds to those with nap
-$email = "anon\@napster.com";
+$serverport = 6699;    # If you are behind a firewall, set this to 0.
 
-$download = "$ENV{HOME}/snap/download";
-$upload = "$ENV{HOME}/snap/upload";
-$cachefile = "$ENV{HOME}/snap/cache.dat";
-$hotlist = "$ENV{HOME}/snap/hotlist.txt";
+$download = "$SNAP_HOME/download";
+$upload = "$SNAP_HOME/upload";
+$cachefile = "$SNAP_HOME/cache.dat";
+$hotlist = "$SNAP_HOME/hotlist.txt";
 
-# $colours = 0;                  # Enable black and white mode.
-# $daemon = 1;                   # Enable daemon mode
+$ul_speed = -1;        # Max speed for u/l's in b/s.            -1 => disabled.
+$ul_limit = -1;        # Max number of u/l's allowed at a time. -1 == no limit
+
+# $colours = 0;        # Enable black and white mode (Curses only)
+# $daemon = 1;         # Enable daemon mode
+
+
+######################## Module Specific Settings ######################
 
 #
 # Remote Controller Settings
 #
 
-# @allowed = ();
-# @disabled = ("/eval", "/exec");
-# $remote_password = "remote_pass";
+@allowed = ();                             # List of allowed users
+@disabled = ("/eval", "/exec", "/alias");  # List of disabled commands
+$remote_password = "remote_pass";          # Access password
 
 #
-# Function used to perform a one-time execution of code later during
-# program startup.  You should load your modules here.
+# Sock settings
+#
+
+$sock_addr = '127.0.0.1';                  # Interface to accept connections on
+$sock_port = 2323;                         # Port to listen on
+$sock_password = 'sock_pass';              # Password required to connect
+
+######################### User Module Section #########################
+
+push @{ $code_hash{&MSG_INIT} }, \&startup_code;
+
+#
+# You can add code here to be executed after program initialization.
+# This may include module loading or anything else you like.
 #
 
 sub startup_code
@@ -60,10 +95,4 @@ sub startup_code
   # eval_file(), like "/eval", obeys the SCRIPT_PATH variable.
 
   # eval_file("remote.pl");
-
-  # Remove this callback from the list after it's run, so it isn't
-  # run more than once (ie, on a reconnect).
-
-  my $callbacks = $code_hash{&MSG_LOGIN_ACK};
-  @$callbacks = grep { $_ ne \&startup_code } @$callbacks;
 }

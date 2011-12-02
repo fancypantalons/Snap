@@ -16,18 +16,24 @@ if (! $GTK_ENABLED)
 $command_hash{"/pconsole"} = [\&do_perl_console];
 $help_hash{"/pconsole"} = \&do_pconsole_help;
 
-$GUI{"menu_factory"}->create_item({ path => "/Plugins/Perl Console",
-				    accelerator => undef,
-				    action => undef,
-				    type => '<Item>' }, \&do_perl_console);
+if (defined %GUI)
+{
+  $GUI{"menu_factory"}->create_item({ path => "/Plugins/Perl Console",
+				      accelerator => undef,
+				      action => undef,
+				      type => '<Item>' }, \&do_perl_console);
+}
 
-print "Perl Console $VERSION Loaded...\n";
+print "~13;Perl Console~c; $VERSION Loaded...\n";
 
 sub do_perl_console
 {
+  my ($sock, $param_str, @params) = @_;
+
   my ($window, $textbox, $vbox, $hbox, $button, $scroller);
   my $menubar = new Gtk::MenuBar;
   my $menu = new Gtk::Menu;
+  my $filename = shift @params;
 
   $window = Gtk::Window->new;  
   $window->set_title("Perl Console");
@@ -38,7 +44,7 @@ sub do_perl_console
   $vbox->pack_start($menubar, 0, 0, 0);
   $menubar->show;
 
-  $window->signal_connect("delete_event", \&kill_widget, $window);
+  $window->signal_connect("delete_event", sub { $_[1]->destroy() }, $window);
   $window->signal_connect("delete_event", sub { $window->{'file_load_opened'} = 0; });
   $window->signal_connect("delete_event", sub { $window->{'file_save_opened'} = 0; });
 
@@ -85,7 +91,7 @@ sub do_perl_console
 
   $menuitem = new Gtk::MenuItem("Close Console");
   $menu->append($menuitem);
-  $menuitem->signal_connect("activate", \&kill_widget, $window);
+  $menuitem->signal_connect("activate", sub { $_[1]->destroy() }, $window);
   $menuitem->show;
 
   $menuitem = new Gtk::MenuItem("File");
@@ -93,6 +99,8 @@ sub do_perl_console
   $menubar->append($menuitem);
   $menuitem->show;
   $clients{$pid}{'channels'}{$channel}{'file_menu_item'} = $menuitem;
+
+  load_source($textbox, $filename) if (defined $filename);
 
   $window->show;
 }
@@ -138,10 +146,10 @@ sub load_perl_source
 
   $ok->signal_connect("clicked", \&do_source_load, $textbox, $fileselection, $overwrite);
   $ok->signal_connect("clicked", sub { $window->{'file_load_opened'} = 0; });
-  $ok->signal_connect("clicked", \&kill_widget, $fileselection);
+  $ok->signal_connect("clicked", sub { $_[1]->destroy() }, $fileselection);
 
   $cancel->signal_connect("clicked", sub { $window->{'file_load_opened'} = 0; });
-  $cancel->signal_connect("clicked", \&kill_widget, $fileselection);
+  $cancel->signal_connect("clicked", sub { $_[1]->destroy() }, $fileselection);
 
   $fileselection->show;
 }
@@ -159,11 +167,19 @@ sub do_source_load
 
   if ($overwrite) { &clear_perl_console(undef, $textbox); }
   
+  load_source($textbox, $filename);
+}
+
+sub load_source
+{
+  my ($textbox, $filename) = @_;
+  my @lines;
+  my $line;
+
   open(FILE, "<$filename");
   @lines = <FILE>;
 
   $textbox->freeze;
-
   $textbox->set_point($textbox->get_position);
 
   foreach $line (@lines)
@@ -192,10 +208,10 @@ sub save_perl_source
 
   $ok->signal_connect("clicked", \&do_source_save, $textbox, $fileselection, $overwrite);
   $ok->signal_connect("clicked", sub { $window->{'file_save_opened'} = 0; });
-  $ok->signal_connect("clicked", \&kill_widget, $fileselection);
+  $ok->signal_connect("clicked", sub { $_[1]->destroy() }, $fileselection);
 
   $cancel->signal_connect("clicked", sub { $window->{'file_save_opened'} = 0; });
-  $cancel->signal_connect("clicked", \&kill_widget, $fileselection);
+  $cancel->signal_connect("clicked", sub { $_[1]->destroy() }, $fileselection);
 
   $fileselection->show;
 }
@@ -218,11 +234,13 @@ sub do_source_save
 
 sub do_pconsole_help
 {
-  return "Usage: /pconsole
+  return "Usage: /pconsole [filename]
 
   Displays the Perl Console.  The Perl Console is a simple editor which allows 
   the user to load, save, or create Perl scripts, and run them within the 
   context of Snap.  This can aid developers in creating scripts for use with 
   Snap, since development can occur interactively.
+
+  If a filename is specified, that file is loaded into the console.
 ";
 }

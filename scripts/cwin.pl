@@ -14,12 +14,15 @@ if (! $GTK_ENABLED)
 
 $command_hash{"/colours"} = [\&do_colours];
 
-$GUI{"menu_factory"}->create_item({ path => "/Plugins/Colour List",
-				    accelerator => undef,
-				    action => undef,
-				    type => '<Item>' }, \&do_colours);
+if (defined $GUI{"menu_factory"})
+{
+  $GUI{"menu_factory"}->create_item({ path => "/Plugins/Colour List",
+				      accelerator => undef,
+				      action => undef,
+				      type => '<Item>' }, \&do_colours);
+}
 
-print "~4;C~5;o~6;l~7;o~8;u~9;r~c; Window $VERSION Loaded...\n";
+print "~4;C~5;o~6;l~7;o~8;u~9;r~c; ~13;Window~c; $VERSION Loaded...\n";
 
 my $win;
 
@@ -28,7 +31,7 @@ sub do_colours
   my $hbox = Gtk::HBox->new(0, 0);
   my $textbox = Gtk::Text->new();
   my $scroller = Gtk::VScrollbar->new($textbox->vadj);
-  my $printer = SnapLib::GtkTextPrinter->new($textbox);
+  my $printer = GtkTextPrinter->new($textbox);
   my $style;
   my $i;
 

@@ -8,14 +8,20 @@ use POSIX qw(_exit);
 sub new
 {
   my $class = shift;
-  my ($socket, $file, $filename, $sentname, $size) = @_;
-  my $self = {};
-  my $pid;
+  my $self = shift;
 
-  bless $self, $class;
+  my $socket = $self->{"socket"};
+  my $file = $self->{"file"};
+  my $filename = $self->{"local_name"};
+  my $sentname = $self->{"sentname"};
+  my $size = $self->{"size"};
+
+  my $pid;
 
   my ($read_child, $write_parent) = (new FileHandle, new FileHandle);
   my ($read_parent, $write_child) = (new FileHandle, new FileHandle);
+
+  bless $self, $class;
 
   pipe $read_child, $write_parent;
   pipe $read_parent, $write_child;
@@ -29,8 +35,6 @@ sub new
       $self->{"write"} = $write_parent;
       $self->{"pid"} = $pid;
       $self->{"filename"} = $filename;
-      $self->{"sentname"} = $sentname;
-      $self->{"size"} = $size;
 
       return $self;
     }
@@ -44,6 +48,11 @@ sub new
     $self->{"socket"}->close();
     $self->{"file"}->close();
     debug_print("DL", "Child dying off...\n");
+    _exit(0);
+  };
+
+  $SIG{__DIE__} = sub {
+    debug_print("DL", "Dying: $_[0]\n");
     _exit(0);
   };
 

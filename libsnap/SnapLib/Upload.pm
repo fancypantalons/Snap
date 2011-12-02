@@ -10,8 +10,16 @@ use constant UL_BLOCK_LEN => 2048;
 sub new
 {
   my $class = shift;
-  my ($socket, $file, $filename, $size, $pos, $user) = @_;
-  my $self = {};
+  my $self = shift;
+
+  my $socket = $self->{"socket"};
+  my $file = $self->{"file"};
+  my $filename = $self->{"filename"};
+  my $size = $self->{"size"};
+  my $pos = $self->{"pos"};
+  my $user = $self->{"user"};
+  my $limit = $self->{"limit"};
+
   my $pid;
 
   bless $self, $class;
@@ -30,9 +38,6 @@ sub new
       $self->{"read"} = $read_parent;
       $self->{"write"} = $write_parent;
       $self->{"pid"} = $pid;
-      $self->{"size"} = $size;
-      $self->{"filename"} = $filename;
-      $self->{"user"} = $user;
 
       return $self;
     }
@@ -42,6 +47,7 @@ sub new
   $self->{"pos"} = $pos;
   $self->{"filename"} = $filename;
   $self->{"user"} = $user;
+  $self->{"limit"} = $limit;
 
   die "$!\n" if ($pid eq undef); 
 
@@ -81,9 +87,10 @@ sub new
       if ((($curt - $oldt) >= 1) || ($#ready < 0))
         {
           my $speed = sprintf "%.2f", (($self->{"sent"} / ($curt - $start)) / 1000); 
-          $oldt = $curt;
-
           print $write_child "SPEED $speed\n";
+	  print $write_child "LENGTH $self->{sent}\n";
+
+	  $oldt = $curt;
         }
                 
       next if (($#ready < 0) || ($#{ $ready[1] } < 0));
@@ -102,20 +109,21 @@ sub new
             }
         }
       
-      if (defined %Time::HiRes::)
-        {
-          my $cur_time = Time::HiRes::gettimeofday();
-          $self->{"time"} = $cur_time if (! defined $self->{"time"});  
-          $self->{"start_time"} = $cur_time if (! defined $self->{"start_time"});
+      if (defined &Time::HiRes::gettimeofday)
+        {            
+           my $cur_time = Time::HiRes::gettimeofday();
+
+	   if (! defined $self->{"last_time"})
+  	     { $self->{"last_time"} = $cur_time; }
           
-          if (($self->{"limit"} > 0) &&
-              ($cur_time - $self->{"time"} < UL_BLOCK_LEN / $self->{"limit"}))
-            {
-              my $count = (UL_BLOCK_LEN / $self->{"limit"} -
-                           ($cur_time - $self->{"time"}));
-              
-              Time::HiRes::sleep($count);
-            }
+           my $len = UL_BLOCK_LEN / $self->{"limit"} if ($self->{"limit"} > 0);
+           my $span = $cur_time - $self->{"last_time"};
+
+           if (($self->{"limit"} > 0) &&
+               ($len > $span))
+             { Time::HiRes::sleep($len - $span); }
+
+	   $self->{"last_time"} = Time::HiRes::gettimeofday();
         }
       
       my $datablock;
@@ -138,11 +146,6 @@ sub new
               $self->{"sent"} += $sent_amt;
               $self->{"len_sample"} += $sent_amt;
 
-              if (($curr_time - $old_time) >= 1)
-                {
-                  print $write_child "LENGTH $self->{sent}\n";
-                }
-          
               next;
             }
         }

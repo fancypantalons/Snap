@@ -1,0 +1,6 @@
+* Fix download queue
+* Add search type to GUI
+* Add support for sharing other forms of data on OpenNap
+* Add support for 609 and other Napster commands
+* Re-visit chatting code and clean it up
+* Write up script documentation

@@ -1,0 +1,3888 @@
+#!/usr/bin/perl -I./snap
+
+#
+# Command-line params:
+#
+# -m ip:port   Specify a metaserver to retrieve server ip/port from.
+# -s ip:port   Specify specific Napster server to connect to.  
+#              Bypasses metaserver.
+# -r float     Specifies the redial delay in seconds.  Can take fractional
+#              values (ie 0.1 == 1 tenth of a second). Default: 60s.
+# -u name      Specify user name.
+# -p password  Specify password.
+# -o port      Specify local port number
+# -i rcfile    Specify alternate rc file to load.
+# -n           Register as new user.
+# -l logfile   Specify a logfile name.
+# -d           Run in server mode (no interface).
+#
+
+#
+# Perl-based Napster client... totally experimental. :)
+#
+# The program is designed to be highly modular, making it easy to add and
+# remove functionality from the program.  Key data structures for module
+# writers are:
+#
+# @poll_funcs - The array of functions polled during the main loop.
+#               So, you can add your own code to the polling loop by
+#               pushing your own function onto the list.
+#
+# %command_hash - Hash table mapping commands to their functions.  Add
+#                 your own commands to the client with this hash.
+#
+# %code_hash - Use this to add handlers for server commands.  Currently,
+#              only one handler per command is allowed.  However, this
+#              limitation will likely be removed later.
+#
+# @downloads      - List of current downloads.
+# @uploads        - List of current uploads.
+# @connections    - List of current connections to the server.
+# @channels       - List of currently subscribed-to channels.
+# %user_lists     - Lists of users in all subscribed-to channels.
+# $active_channel - Name of the current active channel.
+# @search_results - List of results from last search.
+#
+# Documentation for these data structures will come later... for now,
+# you can read the code to figure it out. ;)
+#
+
+use IO::Select;
+use IO::Socket;
+use Net::hostent;
+use Getopt::Long;
+use Text::ParseWords;
+use Curses;
+use FileHandle;
+use DirHandle;
+use nbsocket;
+use MPEG::MP3Info;
+use MD5;
+use Time::HiRes;
+# use strict 'vars';
+
+use constant UL_BLOCK_LEN => 2048;
+
+use constant MSG_ERR => 0;
+use constant MSG_LOGIN => 2;
+use constant MSG_LOGIN_ACK => 3;
+use constant MSG_REG_INFO => 6;
+use constant MSG_REG => 7;
+use constant MSG_REG_OK => 8;
+use constant MSG_REG_EALREADY => 9;
+use constant MSG_REG_EINVALID => 10;
+use constant MSG_FILE_INFO => 100;
+use constant MSG_SEARCH_REQ => 200;
+use constant MSG_SEARCH_ACK => 201;
+use constant MSG_SEARCH_END => 202;
+use constant MSG_DL_REQ => 203;
+use constant MSG_DL_ACK => 204;
+use constant MSG_PRIVATE => 205;
+use constant MSG_GET_ERR => 206;
+use constant MSG_HOTLIST_ADD => 207;
+use constant MSG_USER_SIGNON => 209;
+use constant MSG_USER_SIGNOFF => 210;
+use constant MSG_BROWSE => 211;
+use constant MSG_BROWSE_ACK => 212;
+use constant MSG_BROWSE_END => 213;
+use constant MSG_SERVER_STATS => 214;
+use constant MSG_DOWNLOADING => 218;
+use constant MSG_DONE_DOWNLOADING => 219;
+use constant MSG_UPLOADING => 220;
+use constant MSG_DONE_UPLOADING => 221;
+use constant MSG_HOTLIST_ADD_ACK => 301;
+use constant MSG_HOTLIST_ADD_ERR => 302;
+use constant MSG_HOTLIST_REMOVE => 303;
+use constant MSG_JOIN => 400;
+use constant MSG_PART => 401;
+use constant MSG_SEND_MSG => 402;
+use constant MSG_RCV_MSG => 403;
+use constant MSG_OP_EEXIST => 404;
+use constant MSG_JOIN_ACK => 405;
+use constant MSG_JOIN_MSG => 406;
+use constant MSG_PART_MSG => 407;
+use constant MSG_USER_LIST => 408;
+use constant MSG_USER_LIST_END => 409;
+use constant MSG_CHAN_TOPIC => 410;
+use constant MSG_SERVER_ERR => 414;
+use constant MSG_DL_REQ_ALT => 500;
+use constant MSG_DL_ALT_ACK => 501;
+use constant MSG_SPEED => 600;
+use constant MSG_SPEED_ACK => 601;
+use constant MSG_WHOIS => 603;
+use constant MSG_WHOIS_ACK => 604;
+use constant MSG_WHOWAS_ACK => 605;
+use constant MSG_MOD_USER_LEVEL => 606;
+use constant MSG_UPLOAD => 607;
+use constant MSG_UPLOAD_ACK => 608;
+use constant MSG_USER_KILL => 610;
+use constant MSG_USER_NUKE => 611;
+use constant MSG_USER_BAN => 612;
+use constant MSG_SET_PORT => 613;
+use constant MSG_USER_UNBAN => 614;
+use constant MSG_SHOW_BANLIST => 615;
+use constant MSG_BAN_NOTIFY => 616;
+use constant MSG_LIST_CHANNELS => 617;
+use constant MSG_LIST_CHANNELS_ENTRY => 618;
+use constant MSG_QUEUE_LIMIT => 619;
+use constant MSG_QUEUE_LIMIT_REACHED => 620;
+use constant MSG_MOTD => 621;
+use constant MSG_USER_MUZZLE => 622;
+use constant MSG_USER_UNMUZZLE => 623;
+use constant MSG_USER_UNNUKE => 624;
+use constant MSG_OP_MSG => 627;
+use constant MSG_GLOBAL_MSG => 628;
+use constant MSG_BANLIST_ENTRY => 629;
+use constant MSG_CHANGE_SPEED => 700;
+use constant MSG_CHANGE_PASSWORD => 701;
+use constant MSG_CHANGE_EMAIL => 702;
+use constant MSG_CHANGE_PORT => 703;
+use constant MSG_PING => 751;
+use constant MSG_PONG => 752;
+use constant MSG_SERVER_RELOAD_CFG => 800;
+use constant MSG_GET_SERVER_VERSION => 801;
+use constant MSG_SERVER_CFG => 810;
+use constant MSG_EMOTE => 824;
+use constant MSG_USER_LIST_2_ENTRY => 825;
+use constant MSG_USER_LIST_2 => 830;
+
+use constant MSG_SERVER_CONNECT => 10100;
+use constant MSG_SERVER_DISCONNECT => 10101;
+use constant MSG_SERVER_KILL => 10110;
+use constant MSG_SERVER_REMOVE => 10111;
+use constant MSG_OPENNAP_STATS => 10115;
+
+use constant MSG_RECV_DL_BLOCK => 65536;        # Internal constant
+use constant MSG_SENT_UL_BLOCK => 65537;
+
+#############################################################################
+
+my $CLIENT_VERSION = "0.02a";
+my $CLIENT_ID = "Snap v$CLIENT_VERSION";
+my @extentions = ();
+
+my $RC_FILE = "$ENV{HOME}/.snaprc";
+
+my ($TRUE, $FALSE) = (1, 0);
+
+my ($scr_width, $scr_height, $text_height) = (0, 0);
+my $SCROLL_LENGTH = 101;
+my $TAB_WIDTH = 8;
+
+my %command_hash = ("/quit" => [\&do_quit],
+                    "/search" => [\&do_clear_results, \&do_search],
+                    "/filter" => [\&do_filter],
+                    "/get" => [\&do_send_download_request],
+                    "/resume" => [\&do_resume],
+                    "/dlist" => [\&do_download_list],
+                    "/ulist" => [\&do_upload_list],
+                    "/dl" => [\&do_download_op],
+                    "/ul" => [\&do_upload_op],
+                    "/eval" => [\&do_eval],
+                    "/clear" => [\&do_clear],
+                    "/reconnect" => [\&do_reconnect],
+                    "/list" => [\&do_list_channels],
+                    "/browse" => [\&do_clear_results, \&do_browse],
+                    "/join" => [\&do_chan_join],
+                    "/part" => [\&do_chan_part],
+                    "/send" => [\&do_send_public],
+                    "/whois" => [\&do_send_whois],
+                    "/msg" => [\&do_send_private_msg],
+                    "/users" => [\&do_get_user_list],
+                    "/hotlist" => [\&do_hotlist],
+                    "/pageup" => [\&do_page_up],
+                    "/pagedown" => [\&do_page_down],
+                    "/exec" => [\&do_exec],
+                    "/ping" => [\&do_ping],
+                    "/speed" => [\&do_speed],
+                    "/admin" => [\&do_admin],
+                    "/me" => [\&do_emote],
+                    "/op" =>[\&do_op_msg],
+                    "/global" => [\&do_global_msg],
+                    "/config" => [\&do_config],
+                    "/help" => [\&do_help]);
+
+my %help_hash = ("About" => \&do_about,
+                 "/quit" => "Usage: /quit\n\n  Terminates the program.\n\n",
+                 "/search" => \&do_search_help,
+                 "/filter" => \&do_filter_help,
+                 "/get" => \&do_get_help,
+                 "/resume" => "Usage: /resume <num>\n\n  Resumes download file number <num> from search results.\n\n",
+                 "/dlist" => "Usage: /dstatus\n\n  Gets status of current downloads.\n\n",
+                 "/ulist" => "Usage: /ustatus\n\n  Gets status of current uploads.\n\n",
+                 "/dl" => \&do_dl_help,
+                 "/ul" => \&do_ul_help,
+                 "/eval" => "Usage: /eval <expr> | -f <file>\n\n" .
+                            "  Evaluates Perl expression or file.\n\n",
+                 "/clear" => "Usage: /clear\n\n  Clears the display.\n\n",
+                 "/reconnect" => "Usage: /reconnect\n\n  Reconnect to server.\n\n",
+                 "/list" => "Usage: /list\n\n  Lists channels on server.\n\n",
+                 "/browse" => "Usage: /browse <user>\n\n  Browses files offered by <user>.\n\n",
+                 "/join" => "Usage: /join <chan>\n\n  Join channel <chan>\n\n",
+                 "/part" => "Usage: /part [chan]\n\n  Part channel or current channel if none specified.\n\n",
+                 "/send" => "Usage: /send <msg>\n\n  Send a message to the current channel.\n\n",
+                 "/whois" => "Usage: /whois <user>\n\n  Do whois request on <user>.\n\n",
+                 "/msg" => "Usage: /msg <user> <msg>\n\n  Send private message to <user>.\n\n",
+                 "/users" => "Usage: /users\n\n  Get list of users in current channel.\n\n",
+                 "/hotlist" => \&do_hotlist_help,
+                 "/pageup" => "Usage: /pageup\n\n  Causes the screen to shift up by a half-page.\n\n",
+                 "/pagedown" => "Usage: /pagedown\n\n  Causes the screen to shift down by a half-page\n\n",                 
+                 "/exec" => \&do_exec_help,
+                 "/ping" => "Usage: /ping <user>\n\n  Send a ping to the specified user.\n\n",
+                 "/speed" => "Usage: /speed <user>\n\n  Request the connection type of a given user.\n\n", 
+                 "/admin" => \&do_admin_help,
+                 "/me" => "Usage: /me <text>\n\n  Akin to IRC's /me command, this sends an emote to the channel.\n\n",
+                 "/op" => "Usage: /op <text>\n\n  Attempt to send a message to all admins.\n\n",
+                 "/global" => "Usage: /global <text>\n\n  Attempt to send a message to all users.\n\n",
+                 "/config" => \&do_config_help,
+                 "/help" => \&do_help);
+
+my %code_hash = (&MSG_ERR => [\&print_text],
+                 &MSG_LOGIN_ACK => [\&send_file_list, \&send_hotlist],
+                 &MSG_SERVER_STATS => [\&update_counts],
+                 &MSG_MOTD => [\&print_text],
+                 &MSG_SEARCH_ACK => [\&get_search_result],
+                 &MSG_SEARCH_END => [\&print_search_results],
+                 &MSG_GET_ERR => [\&get_error],
+                 &MSG_DL_ACK => [\&start_download],
+                 &MSG_QUEUE_LIMIT_REACHED => [\&download_rejected],
+                 &MSG_RECV_DL_BLOCK => [],
+                 &MSG_LIST_CHANNELS_ENTRY => [\&get_channel],
+                 &MSG_LIST_CHANNELS => [\&print_channels],
+                 &MSG_BROWSE_ACK => [\&get_browse_result],
+                 &MSG_BROWSE_END => [\&print_search_results],
+                 &MSG_REG_OK => [\&nick_register_ok],
+                 &MSG_REG_EALREADY => [\&nick_already_registered],
+                 &MSG_REG_EINVALID => [\&nick_invalid],
+                 &MSG_OP_EEXIST => [\&server_message],
+                 &MSG_UPLOAD => [\&setup_upload],
+                 &MSG_DL_ALT_ACK => [\&start_alt_upload],
+                 &MSG_RCV_MSG => [\&print_public_message],
+                 &MSG_JOIN_ACK => [\&join_channel],
+                 &MSG_USER_LIST => [\&get_user_entry],
+                 &MSG_USER_LIST_END => [\&print_user_list],
+                 &MSG_JOIN_MSG => [\&user_joined],
+                 &MSG_PART_MSG => [\&user_parted],
+                 &MSG_CHAN_TOPIC => [\&print_chan_topic],
+                 &MSG_WHOIS_ACK => [\&print_whois],
+                 &MSG_WHOWAS_ACK => [\&print_whowas],
+                 &MSG_PRIVATE => [\&print_private_msg],
+                 &MSG_USER_LIST_2_ENTRY => [\&get_user_entry],
+                 &MSG_USER_LIST_2 => [\&print_user_list],
+                 &MSG_HOTLIST_ADD_ACK => [\&hotlist_add_ok],
+                 &MSG_HOTLIST_ADD_ERR => [\&hotlist_add_err],
+                 &MSG_USER_SIGNON => [\&user_sign_on],
+                 &MSG_USER_SIGNOFF => [\&user_sign_off],
+                 &MSG_PING => [\&ping_response],
+                 &MSG_PONG => [\&pong_response],
+                 &MSG_SPEED_ACK => [\&speed_response],
+                 &MSG_EMOTE => [\&print_emote],
+                 &MSG_OP_MSG => [\&print_op_msg],
+                 &MSG_GLOBAL_MSG => [\&print_global_msg],
+                 &MSG_OPENNAP_STATS => [\&print_server_stats],
+                 &MSG_BANLIST_ENTRY => [\&get_banlist_entry],
+                 &MSG_SHOW_BANLIST => [\&print_banlist],
+                 &MSG_BAN_NOTIFY => [\&print_ban_notify],
+                 &MSG_SET_PORT => [\&set_dataport]
+                );
+
+my %speed_hash = (0 => "Unknown", 1 => "14.4", 2 => "28.8", 3 => "33.6",
+                  4 => "56.7", 5 => "64K", 6 => "128K", 7 => "Cable",
+                  8 => "DSL", 9 => "T1", 10 => "T3+");
+
+my %key_hash = ("\n" => \&key_newline,
+                &KEY_BACKSPACE => \&key_backspace,
+                chr(127) => \&key_backspace,
+                &KEY_UP => \&key_up,
+                &KEY_DOWN => \&key_down,
+                &KEY_LEFT => \&key_left,
+                &KEY_RIGHT => \&key_right,
+                chr(1) => \&key_home,
+                chr(5) => \&key_end,
+                chr(11) => \&key_kill_line,
+                &KEY_NPAGE => \&key_page_down,
+                &KEY_PPAGE => \&key_page_up);
+
+my %window_hash = ("refresh" => [\&window_refresh],
+                   "clear" => [\&window_clear],
+                   "print" => [\&window_print],
+                   "page_up" => [\&window_pg_up],
+                   "page_down" => [\&window_pg_down]);
+
+my $window_print_func = \&window_print;
+
+my @poll_funcs = ();
+
+my $POLL_DELAY = 1;
+my $REDIAL_DELAY = 60;
+
+my (@search_results, @downloads, @uploads, @channels, @connections, @hotlist,
+    @banlist);
+my $active_channel;
+my %user_lists;
+my %pings;
+my $cache;
+
+###########################################################################
+
+my ($username, $password, $serverport, $speed, $email);
+my $logname = "";
+my $hotlist = "hotlist.txt";
+my $cachefile = "cache.dat";
+my $napster_sock;
+my $server_sock;
+my $metaserver = "server.napster.com";
+my $metaport = "8875";
+my $newuser = 0;
+my $daemon = 0;
+my ($ul_count, $ul_limit) = (0, -1);
+my @host;
+my @win;
+my %text_state;
+
+Getopt::Long::config("pass_through");
+
+{
+  my $snapname;
+  my $help;
+  my %optctl = ("i" => \$snapname);
+
+  if (defined $snapname) { $RC_FILE = $snapname; }
+}
+
+eval_file($RC_FILE);
+
+Getopt::Long::config("no_pass_through");
+
+{
+  my $serverstr;
+  my $mserver;
+  my $redial;
+  my $new;
+  my $log;
+  my $daemon_mode;
+  my $help;
+  my %optctl = ("s" => \$serverstr,
+                "m" => \$mserver,
+                "r" => \$redial,
+                "n" => \$new,
+                "l" => \$log,
+                "d" => \$daemon_mode,
+                "u" => \$username,
+                "p" => \$password,
+                "o" => \$serverport,
+                "h" => \$help);
+
+  if (!GetOptions(\%optctl, "s=s", "m=s", "r=f", "n!", "l=s", "d!", "i=s",
+                  "u=s", "p=s", "o=i", "h!"))
+    {
+      do_cmdline_help();
+      exit(0);
+    }
+
+  $serverstr =~ /(.*):(.*)/;  
+  $host[0] = $1; $host[1] = $2;
+
+  if (defined $help)
+    {
+      do_cmdline_help();
+      exit(0);
+    }
+
+  if (defined $mserver)
+    {
+      if ($mserver =~ /(.*):(.*)/)
+        {
+          $metaserver = $1; $metaport = $2;
+        }
+      else
+        { 
+          $metaserver = $mserver;
+          $metaport = 8875;
+        }
+    }
+
+  if (defined $redial)
+    {
+      $REDIAL_DELAY = $redial;
+    }
+
+  if (defined $new) { $newuser = $new; }
+  if (defined $log) { $logname = $log; }
+  if (defined $daemon_mode) { $daemon = $daemon_mode; }
+}
+
+autoflush STDOUT 1;              # Set screen to autoflush.
+
+my $logfile;
+
+if ($logname ne undef)
+{
+  $logfile = new FileHandle ">$logname";
+  $logfile->autoflush();
+}
+
+setup_new_connection();
+setup_server();
+@win = setup_screen() if (! $daemon);
+
+$SIG{INT} = sub { shutdown_prog($napster_sock, "SIGINT: $!") };
+$SIG{PIPE} = sub { shutdown_prog($napster_sock, "SIGPIPE: $!") };
+$SIG{CHLD} = \&reaper;
+$SIG{__WARN__} = \&warn_handler;
+
+if ($daemon)
+  {
+    if ($serverport)
+      { print "Running server on port $serverport...\n"; }
+    else
+      { print "Running server in push mode...\n"; }
+  }
+
+main_loop();
+
+################################ Signal Handler ##########################
+
+sub reaper
+{
+  my $child;
+  my $done = 0;
+  my $pid = wait();
+  my $trans;
+  my $i;
+
+  for ($i = 0; $i <= $#uploads; $i++)
+    {
+      $trans = $uploads[$i];
+
+      if ($$trans{"pid"} == $pid)
+        {
+          $$trans{"pid"} = undef;
+          kill_ul($napster_sock, $i, $win[0], \%text_state);
+          $done = 1;
+
+          last;
+        }
+    }
+
+  if (! $done)
+    {
+      for ($i = 0; $i <= $#downloads; $i++)
+        {
+          $trans = $downloads[$i];
+
+          if ($$trans{"pid"} == $pid)
+            {
+              $$trans{"pid"} = undef;
+              kill_dl($napster_sock, $i, $win[0], \%text_state);
+              $done = 1;
+
+              last;
+            }
+        }
+    }
+
+  print_debug("Reaper", "$pid died...\n");
+  
+  $SIG{CHLD} = \&reaper;
+};
+
+sub warn_handler
+{
+  print_to_window($win[0], $_[0], \%text_state, 1);
+
+  $SIG{__WARN__} = \&warn_handler;
+}
+
+############################### File Stuff #############################
+
+sub eval_file
+{
+  my $f = new FileHandle shift;
+  my $cmd;
+
+  if (defined $f)
+    {
+      $cmd = join(" ", <$f>);
+      $f->close();
+    }
+
+  no strict;
+  eval $cmd;
+}
+
+sub print_debug
+{
+  my $catagory = shift;
+  my $text = shift;
+
+  if (defined $logfile)
+    { print $logfile "$catagory: $text"; }
+}
+
+######################### Napster Initialization #######################
+
+sub setup_new_connection
+{
+  if (defined $napster_sock)
+    {
+      shutdown($napster_sock->socket(), 2);
+
+      $host[0] = undef; $host[1] = undef;
+    }
+
+  if ((! defined $host[0]) || (! defined $host[1]))
+    { @host = get_best_host(); }
+
+  $napster_sock = new NBSocket("-Remote" => $host[0],
+                               "-Port" => $host[1],
+                               "-Blocking" => 0);
+
+  login_to_napster($napster_sock, $username, $password, $serverport, $speed);
+}
+
+sub get_best_host
+{
+  my ($host, $port);
+
+  print "Getting a host from $metaserver:$metaport.." if (! defined $win[0]);
+
+  do
+    {
+      print ".";
+
+      my $napsrv = new NBSocket("-Remote" => $metaserver,
+                                "-Port" => $metaport,
+                                "-Blocking" => 1);
+      my @data;
+
+      @data = $napsrv->read();
+
+      shutdown($napsrv->socket(), 2);
+
+      $data[1] =~ s/\012|\0//g;
+      $data[1] =~ /(\d+?\.\d+?\.\d+?\.\d+?):(.*)/;
+
+      $host = $1; $port = $2;
+
+      if ($host =~ /127\.0\.0\.1/)
+        { select(undef, undef, undef, $REDIAL_DELAY); }
+    }
+  while ($host =~ /127\.0\.0\.1/);
+
+  if ((! defined $host) || (! defined $port))
+    {
+      print "\nError getting host!\n";
+      exit(255);
+    }
+
+  print_debug("Init", "Connecting to $host:$port...\n");
+  print "\nGot $host:$port...\n" if (! defined $win[0]);
+
+  return ($host, $port);
+}
+
+sub login_to_napster
+{
+  my $sock = shift;
+  my ($username, $password, $serverport, $speed) = @_;
+  my $text;
+  my $count = 0;
+  my $extension_str = join(", ", @extensions);
+
+  print "Connecting to $host[0]:$host[1]...\n" if (! defined $win[0]);
+
+  if ($newuser)
+    {
+      print_debug("Registration", "Requesting $username...\n");
+
+      $text = "$username";
+      send_to_server($sock, MSG_REG, $text, 1);
+    }
+  else
+    {
+      my $client;
+      $client = ($extension_str eq undef) ? $CLIENT_ID : "$CLIENT_ID: $extension_str";
+
+      print_debug("Login", "$username, $password, $serverport, $speed\n");
+
+      $text = "$username $password $serverport \"$client\" $speed";
+      send_to_server($sock, MSG_LOGIN, $text, 1);
+    }
+}
+
+sub shutdown_server
+{
+  close($server_sock);
+}
+
+sub setup_server
+{
+  return if (! $serverport);
+
+  $server_sock = IO::Socket::INET->new(Proto => 'tcp',
+                                       LocalPort => $serverport,
+                                       Listen => SOMAXCONN,
+                                       Reuse => 1);
+}
+
+################################# Main Code ##############################
+
+sub setup_screen
+{
+  my $textwin;
+  my $cmdwin;
+
+  initscr(); noecho(); cbreak(); nodelay(1); start_color(); keypad(1);
+
+  init_pair(1, COLOR_YELLOW, COLOR_BLACK);
+  init_pair(2, COLOR_WHITE, COLOR_BLACK);
+  init_pair(3, COLOR_WHITE, COLOR_BLUE);
+  init_pair(4, COLOR_RED, COLOR_BLACK);
+
+  getmaxyx($scr_height, $scr_width);
+  $textwin = subwin($scr_height-2, $scr_width, 0, 0);
+  $cmdwin = subwin(2, $scr_width, $scr_height-2, 0);
+  scrollok($textwin, 1);
+
+  $text_height = $scr_height-2;
+
+  attrset($cmdwin, COLOR_PAIR(3));
+  addstr($cmdwin, 0, 0, "-"x$scr_width);
+  attrset($cmdwin, COLOR_PAIR(2));
+
+  return ($textwin, $cmdwin);
+}
+
+sub shutdown_prog
+{
+  my $sock = shift;
+  my $message = shift;
+  my $trans;
+  my @transfers = @downloads;
+  push @transfers, @uploads;
+
+  print_debug("Shutdown", "Terminating...\n");
+  print_debug("Shutdown", "Error: $message\n") if ($message ne undef);
+
+  foreach $trans (@transfers)
+    {
+      if ($$trans{"pid"} ne undef)
+        {
+          print_debug("Shutdown", "Kill child $$trans{pid}...\n");
+          kill 2, $$trans{"pid"};
+        }
+    }
+
+  my $user;
+  my $file = new FileHandle ">$hotlist";
+
+  foreach $user (@hotlist)
+    {
+      print $file "$user\n";
+    }
+
+  close $file;
+
+  endwin();
+  shutdown_server();
+  close($sock->socket());
+
+  print "$message\n" if ($message ne undef);
+
+  exit(0);
+}
+
+sub send_to_server
+{
+  my $sock = shift;
+  my $cmd = shift;
+  my $data = shift;
+  my $wait = shift;
+  my $sent;
+
+  my $type = pack("v", $cmd);
+  my $length = pack("v", length $data);
+  my $message = "$length$type$data";
+
+  print_debug("Send", "Command: $cmd, Data: $data\n");
+
+  do
+    {
+      $sent = $sock->write("-Data" => $message, "-Length" => length $message);
+    }
+  while ((defined $wait) && ($sent == 0));
+
+  return $sent;
+}
+
+sub read_dir_tree
+{
+  my $dir = shift;
+  my $handle = new DirHandle "$dir";
+  my @list = $handle->read();
+  my @results;
+
+  close $handle;
+
+  print_debug("DirTree", "Reading $dir...\n");
+
+  foreach $entry (@list)
+    {
+      next if ($entry =~ /^\.{1,2}/);
+
+      if ((-d "$dir/$entry") && (! -l "$dir/$entry"))
+        {
+          push @results, read_dir_tree("$dir/$entry");
+        }
+      else
+        {
+          push @results, "$dir/$entry";
+        }
+    }
+
+  print_debug("DirTree", "Done reading $dir...\n");
+
+  return @results;
+}
+
+sub read_cache_file
+{
+  my $fname = shift;
+  my $file = new FileHandle "<$fname";
+  my @lines = <$file>;
+  my $line;
+  my %cache;
+
+  $file->close() if ($file ne undef);
+
+  foreach $line (@lines)
+    {
+      my ($name, $id, $size, $bitrate, $freq, $time);
+
+      $line =~ /\"(.+?)\" (.+?) (.+?) (.+?) (.+?) (.+?)/;
+
+      $name = $1;
+
+      $cache{$name}{"id"} = $2;
+      $cache{$name}{"size"} = $3;
+      $cache{$name}{"bitrate"} = $4;
+      $cache{$name}{"freq"} = $5;
+      $cache{$name}{"time"} = $6;
+    }
+
+  return \%cache;
+}
+
+sub write_cache_file
+{
+  my $fname = shift;
+  my $cache = shift;
+  my $file = new FileHandle ">$fname";
+  my $entry;
+  
+  foreach $entry (keys %$cache)
+    {
+      next if ($entry eq "");
+
+      print $file "\"$entry\" " .
+                  "$$cache{$entry}{id} " .
+                  "$$cache{$entry}{size} " .
+                  "$$cache{$entry}{bitrate} " . 
+                  "$$cache{$entry}{freq} " . 
+                  "$$cache{$entry}{time}\n";
+    }
+
+  close $file;
+}
+
+sub getopts
+{
+  my $optref = shift;  
+  my $paramref = shift;
+  my $quiet = shift;
+  my $ignore = shift;
+  my %opts = %$optref;
+  my @params = @$paramref;
+
+  my ($curop, $curcount);
+  my ($param, $entry);
+  my $isopt;
+  my %results;
+
+  while ($#params >= 0)
+    {
+      $param = shift @params;
+      $entry = $param;
+
+      if ($entry =~ /^-/)
+        {
+          $isopt = 1;
+          $entry =~ s/^-//;
+        }
+      else
+        {
+          $isopt = 0;
+        }
+
+      if ((defined $opts{$entry}) && ($isopt))
+        {
+          if ($curcount < $opts{$curop})
+            { 
+              warn "Error in parameters to $curop..." if (! defined $quiet);
+              return undef; 
+            }
+          elsif ($curcount > $opts{$curop})
+            {
+              if (defined $ignore)
+                {
+                  push @params, $param;
+                  last;
+                }
+              else
+                {
+                  warn "Error in parameters to $curop..." if (! defined $quiet);
+                  return undef;
+                }
+            }          
+
+          $curop = $entry;
+          $curcount = 0;
+
+          $results{$curop} = [] if (! defined $results{$curop});
+        }
+      elsif (($curop eq undef) || ($isopt))
+        {
+          warn "Invalid flag: $param" if (! defined $quiet);
+          return;
+        }  
+      elsif (($curcount == $opts{$curop}) && (defined $ignore))
+        {
+          unshift @params, $param;
+          last;
+        }
+      elsif ($curcount == $opts{$curop})
+        {
+          warn "Error in parameters to $curop..." if (! defined $quiet);
+          return undef; 
+        }
+      else
+        {
+          push @{ $results{$curop} }, $entry;
+          $curcount++;
+        }
+    }
+
+  if ($curcount < $opts{$curop})
+    { 
+      warn "Error in parameters to $curop..." if (! defined $quiet);
+      return undef; 
+    }
+  elsif (($curcount > $opts{$curop}) && (! defined $ignore))
+    {
+      warn "Error in parameters to $curop..." if (! defined $quiet);
+      return undef;
+    }          
+
+  @$paramref = @params;
+
+  return \%results;
+}
+
+sub do_cmdline_help
+{
+  print 'Command-line params:
+
+-m ip:port   Specify a metaserver to retrieve server ip/port from.
+-s ip:port   Specify specific Napster server to connect to.  
+             Bypasses metaserver.
+-r float     Specifies the redial delay in seconds.  Can take fractional
+             values (ie 0.1 == 1 tenth of a second). Default: 60s.
+-u name      Specify user name.
+-p password  Specify password.
+-o port      Specify local port number
+-i rcfile    Specify alternate rc file to load.
+-n           Register as new user.
+-l logfile   Specify a logfile name.
+-d           Run in server mode (no interface).
+';
+}
+
+############################ Routines for Line Input ######################
+
+sub key_newline
+{
+  my $state = shift;
+
+  $$state{"line"} = $$state{"buffer"};
+
+  unshift @{ $::state{"history"} }, $$state{"line"};
+
+  $$state{"status"} = $TRUE;
+  $$state{"buffer"} = "";
+  $$state{"pos"} = 0;
+  $$state{"length"} = 0;
+  $$state{"start"} = 0;
+}
+
+sub key_backspace
+{
+  my $state = shift;
+
+  return if (($$state{"length"} == 0) || ($$state{"pos"} == 0));  
+  
+  $$state{"buffer"} = substr($$state{"buffer"}, 0, $$state{"pos"} - 1) . 
+                      substr($$state{"buffer"}, $$state{"pos"});
+  $$state{"length"}--;
+  $$state{"status"} = $FALSE;
+  $$state{"pos"}--;
+}
+
+sub key_up
+{
+  my $state = shift;
+
+  push @{ $::state{"history"} }, $$state{"buffer"};
+  
+  $$state{"buffer"} = shift @{ $::state{"history"} };
+  $$state{"pos"} = length($$state{"buffer"});
+  $$state{"length"} = length($$state{"buffer"});
+  $$state{"status"} = $FALSE;
+  $$state{"start"} = 0;
+}
+
+sub key_down
+{
+  my $state = shift;
+
+  unshift @{ $::state{"history"} }, $$state{"buffer"};
+  
+  $$state{"buffer"} = pop @{ $::state{"history"} };
+  $$state{"pos"} = length($$state{"buffer"});
+  $$state{"length"} = length($$state{"buffer"});
+  $$state{"status"} = $FALSE;
+  $$state{"start"} = 0;
+}
+
+sub key_left
+{
+  my $state = shift;
+
+  $$state{"pos"}-- if ($$state{"pos"} > 0);
+}
+
+sub key_right
+{
+  my $state = shift;
+
+  $$state{"pos"}++ if ($$state{"pos"} < $$state{"length"}); 
+}
+
+sub key_home
+{
+  my $state = shift;
+
+  $$state{"pos"} = 0;
+}
+
+sub key_end
+{
+  my $state = shift;
+
+  $$state{"pos"} = $$state{"length"};
+}
+
+sub key_kill_line
+{
+  my $state = shift;
+
+  $$state{"buffer"} = substr($$state{"buffer"}, 0, $$state{"pos"});
+  $$state{"length"} = length($$state{"buffer"});
+}
+
+sub key_page_up
+{
+  my $state = shift;
+
+  $$state{"line"} = "/pageup";
+  $$state{"status"} = $TRUE;
+}
+
+sub key_page_down
+{
+  my $state = shift;
+
+  $$state{"line"} = "/pagedown";
+  $$state{"status"} = $TRUE;
+}
+
+sub round_up
+{
+  my $val = shift;
+  my $intval = int($val);
+
+  if ($val - $intval >= 0.5)
+    {
+      $intval++;
+    }
+
+  return $intval;
+}
+
+sub getline
+{
+  my $window = shift;
+  my $ch = shift;
+  my $state = shift;
+
+  attroff($window, COLOR_PAIR(2));
+
+  if (defined $key_hash{$ch})
+    {
+      &{ $key_hash{$ch} }($state);
+    }
+  else
+    {
+      $$state{"buffer"} = substr($$state{"buffer"}, 0, $$state{"pos"}) . 
+                          $ch . 
+                          substr($$state{"buffer"}, $$state{"pos"});
+      $$state{"pos"}++;
+      $$state{"length"}++;
+      $$state{"status"} = $FALSE;
+    }
+
+  if (($$state{"pos"} - $$state{"start"} >= $scr_width) ||
+      ($$state{"pos"} - $$state{"start"} < 0))
+    {
+      $$state{"start"} = $$state{"pos"} - round_up($scr_width/2);
+      $$state{"start"} = 0 if ($$state{"start"} < 0);
+    }
+
+  print_line($window, $state);
+}
+
+sub print_line
+{
+  my ($window, $state) = @_;  
+  my $line;
+  my $cursor_pos = $$state{"pos"} - $$state{"start"};
+
+  $line = substr($$state{"buffer"}, $$state{"start"}, $scr_width);
+  $line .= " " x ($scr_width - $cursor_pos);
+
+  addstr($window, 1, 0, $line); 
+  move($window, 1, $cursor_pos);  
+}
+
+#################### Routines for handling the text window #################
+
+sub call_window_func
+{
+  my $cmd = shift;
+  my $func;
+
+  foreach $func (@{ $window_hash{$cmd} })
+    { &$func(@_); }  
+}
+
+sub refresh_window
+{
+  call_window_func("refresh", @_);
+}
+
+sub clear_window
+{
+  call_window_func("clear", @_);
+}
+
+sub print_to_window
+{
+  call_window_func("print", @_);
+}
+
+sub window_page_up
+{
+  call_window_func("page_up", @_);
+}
+
+sub window_page_down
+{
+  call_window_func("page_down", @_);
+}
+
+sub window_refresh
+{
+  my ($window, $state) = @_;
+  my $i;
+  my $end = $$state{"top"} + $text_height - 1;
+
+  erase($window);
+  move($window, 0, 0);
+
+  for ($i = $$state{"top"}; $i <= $end; $i++)
+    {
+      my $line = ${ $$state{"buffer"} }[$i];
+      my $new = chomp($line);
+
+      addstr($window, $line);
+      addstr($window, "\n") if (($i < $end) && $new);
+    }
+}
+
+sub window_clear
+{
+  my ($window, $state) = @_;
+
+  splice @{ $$state{"buffer"} }, 0;
+  $$state{"lines"} = 0;
+  $$state{"top"} = 0;
+
+  erase($window);
+}
+
+sub window_print
+{
+  my $window = shift;
+  my $text = shift;
+  my $state = shift;
+  my $color = shift;
+  my $i;
+
+  while ($text ne "")
+    {
+      my $line;
+      my $pos = index($text, "\n") + 1;
+
+      if ($pos > 0)
+        { $line = substr($text, 0, $pos); }
+      else
+        { $line = $text; }
+
+      $text =~ s/^\Q$line\E//;
+
+      ${ $$state{"buffer"} }[$$state{"lines"}] .= $line;
+
+      if ($$state{"lines"} > $SCROLL_LENGTH)
+        {
+          shift @{ $$state{"buffer"} };
+          $$state{"lines"}--;
+        }
+
+      $$state{"lines"}++ if ($line =~ /\n/);
+
+      next if ($daemon);
+
+      if ($win[0] eq undef)
+        {
+          print $line;
+        }
+      else
+        {
+          attrset($window, COLOR_PAIR($color));
+          addstr($window, $line);
+        }
+  
+      if ($$state{"top"} >= $$state{"lines"} - $text_height)
+        {
+          $$state{"top"}++ if ($$state{"lines"} - $$state{"top"} >= $text_height);
+        }
+    }
+}
+
+sub window_pg_up
+{
+  my $window = shift;
+  my $state = shift;
+
+  $$state{"top"} -= $text_height / 2;
+  $$state{"top"} = 0 if ($$state{"top"} < 0);
+
+  refresh_window($window, $state);
+}
+
+sub window_pg_down
+{
+  my $window = shift;
+  my $state = shift;
+
+  $$state{"top"} += $text_height / 2;
+
+  if ($$state{"top"} > $$state{"lines"} - $text_height + 1)
+    { $$state{"top"} = $$state{"lines"} - $text_height + 1; }
+
+  $$state{"top"} = 0 if ($$state{"top"} < 0);
+
+  refresh_window($window, $state);
+}
+
+################### Routines for processing server commands #################
+
+sub update_counts
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_;
+  my ($libs, $total, $gigs);
+
+  $$text =~ s/(\d+) (\d+) (\d+)//g;
+  $total = $2; $libs = $1; $gigs = $3;   
+
+  return if ($daemon);
+
+  attrset($cmdwin, COLOR_PAIR(3));
+  addstr($cmdwin, 0, 0, "-- Songs: $total -- Libraries: $libs -- Gigs: $gigs ");
+  attrset($cmdwin, COLOR_PAIR(2));
+}
+
+sub send_file_list
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_;
+  my $file;
+  my ($info, $data, $digest);
+
+  return if ((! defined $upload) || ($upload eq ""));
+
+  my @list = read_dir_tree("$upload");
+  $cache = read_cache_file("$cachefile");
+
+  foreach $file (keys %$cache)
+    {
+      next if (-e $file);
+      next if ($file !~ /^\Q$upload\E/);
+
+      print_debug("Cache", "Removing $file...\n");
+      
+      delete $$cache{$file};
+    }
+
+  foreach $file (@list)
+    {
+      next if ($file !~ /\.mp3$/);
+      next if (defined $$cache{$file});
+
+      print_debug("Cache", "Adding $file...\n");
+
+      my @stat_info = stat "$file";
+      my $md5 = new MD5;
+      my $fhandle = new FileHandle("$file");
+
+      sysread($fhandle, $data, 299008);
+      $fhandle->close();
+      $md5->add($data);
+
+      $info = get_mp3info("$file");
+
+      $$cache{$file}{"id"} = unpack("H*", $md5->digest());
+      $$cache{$file}{"size"} = $stat_info[7];
+      $$cache{$file}{"bitrate"} = $$info{"BITRATE"};
+      $$cache{$file}{"freq"} = $$info{"FREQUENCY"} * 1000;
+      $$cache{$file}{"time"} = $$info{"MM"} * 60 + $$info{"SS"};      
+    }
+
+  foreach $file (keys %$cache)
+    {
+      next if ($file eq "");
+
+      my $mangled_name = $file;
+
+      $mangled_name =~ s/^\Q$upload\E//g;
+      $mangled_name =~ s/\//\\/g;
+
+      send_to_server($sock, MSG_FILE_INFO, "\"$mangled_name\" " . 
+                                           "$$cache{$file}{id} " .
+                                           "$$cache{$file}{size} " . 
+                                           "$$cache{$file}{bitrate} " . 
+                                           "$$cache{$file}{freq} " .
+                                           "$$cache{$file}{time}");
+    }
+
+  write_cache_file("$cachefile", $cache);
+}
+
+sub print_text
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $tabstr = " " x $TAB_WIDTH;
+
+  $$text =~ s/\t/$tabstr/g;
+
+  print_to_window($textwin, "$$text\n", $text_state, 1);
+}
+
+sub get_search_result
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my %song;
+
+  $$text =~ /\"(.*)\" (.+?) (\d+?) (\d+?) (\d+?) (\d+?) (\w+?) (\d+?) (\d)/;
+  $song{"name"} = $1;
+  $song{"id"} = $2;
+  $song{"size"} = $3;
+  $song{"bitrate"} = $4;
+  $song{"frequency"} = $5;      
+  $song{"number"} = $6;
+  $song{"user"} = $7;
+  $song{"ip"} = $8;
+  $song{"speed"} = $9;
+
+  push @search_results, \%song;
+}
+
+sub get_browse_result
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my %song;
+
+  $$text =~ /(.+) \"(.*)\" (.+?) (\d+?) (\d+?) (\d+?) (\d+?)/;
+  $song{"user"} = $1;
+  $song{"name"} = $2;
+  $song{"id"} = $3;
+  $song{"size"} = $4;
+  $song{"bitrate"} = $5;
+  $song{"frequency"} = $6;      
+  $song{"number"} = $7;
+  $song{"speed"} = 0;
+
+  push @search_results, \%song;
+}
+
+sub print_search_results
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $id;
+  my $count = 1;
+  my $song;
+
+  print_to_window($textwin, "Song | Size | Bitrate | Frequency | User | Speed\n", $text_state, 2);
+  print_to_window($textwin, "------------------------------------------------\n", $text_state, 2);
+  
+  foreach $song (@search_results)
+    {
+      my $name;
+      my $size;
+      
+      $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+
+      print_to_window($textwin, 
+                      "$count. " .
+                      "$2 " .
+                      sprintf("%.2f", $$song{"size"}/1000000) . "mb " .
+                      "$$song{bitrate} $$song{frequeny} $$song{user} " .                      
+                      $speed_hash{$$song{"speed"}} . "\n", 
+                      $text_state, 2);
+
+      $count++;
+    }
+}
+
+sub get_error
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $file);
+
+  $$text =~ /(.+?) (.+)/;
+  $user = $1; $file = $2;
+
+  print_to_window($textwin, "Error getting $file from $user!\n", $text_state, 1);
+}
+
+sub start_download
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $filename, $sentname, $ip, $port, $id, $speed);
+  my ($result, $song);
+  my $dl_entry;
+  my $dl = undef;
+  my $found = 0;
+
+  $$text =~ /(\w+) (\d+) (\d+) \"(.*)\" (.+) (\d)/;
+  $user = $1; $ip = $2; $port = $3; $sentname = $4; $id = $5; $speed = $6;
+  $filename = $sentname;
+  $filename =~ s/\\/\//g;
+
+  foreach $dl_entry (@downloads)
+    {
+      if (($$dl_entry{"user"} eq $user) &&
+          ($$dl_entry{"sentname"} eq $sentname))
+        { 
+          $found = 1;
+          $dl = $dl_entry; last; 
+        }
+    }
+
+  $dl = {} if (! defined $dl);
+
+  my ($a, $b, $c, $d) = unpack('C4', pack('L', $ip));
+  $ip = "$a.$b.$c.$d";
+
+  foreach $song (@search_results)
+    {  
+      $result = $song; 
+      last if (($$song{"user"} eq $user) &&
+               ($$song{"name"} eq $sentname)); 
+    }
+
+  $$dl{"ip"} = $ip;
+  $$dl{"user"} = $user;
+  $$dl{"filename"} = $filename;
+  $$dl{"sentname"} = $sentname;
+  $$dl{"size"} = $$result{"size"};
+  $$dl{"pos"} = 0;
+  $$dl{"received"} = 0;
+  $$dl{"type"} = "DOWNLOAD";
+
+  $filename =~ /(.*\/|.*\\)?(.*\.mp3)/;
+  my $local_name = $2;
+
+  $$dl{"local_name"} = $2;
+
+  if ($$dl{"resume"})
+    {
+      my @stat_info = stat "$download/$2";
+
+      $$dl{"pos"} = $stat_info[7];
+      $$dl{"received"} = $$dl{"pos"};
+      $$dl{"file"} = new FileHandle ">>$download/$2";
+    }
+  else
+    {
+      $$dl{"file"} = new FileHandle ">$download/$2";
+    }
+
+  $$dl{"file"}->autoflush(1);
+  
+  print_debug("DL", "New DL from $user ($ip:$port), $filename " .
+                 "($$result{size})" .
+                 " -> $local_name\n");
+
+  if (! $found) { push @downloads, $dl; }
+
+  if ($port eq 0)
+    {
+      print_to_window($textwin, "Firewalled user, using alternate download...\n", $text_state, 1);
+      print_debug("DL", "Alternate Download Method Used...\n");
+
+      send_to_server($sock, MSG_DL_REQ_ALT, "$user \"$sentname\"");
+      $$dl{"status"} = 3;
+
+      return;
+    }
+  else
+    {
+      $$dl{"status"} = 0;
+      $$dl{"socket"} = new NBSocket("-Remote" => $ip,
+                                    "-Port" => $port,  
+                                    "-Blocking" => 1);
+    }
+}
+
+sub download_rejected
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $filename, $size, $count);
+
+  $$text =~ /(.*?) \"(.*?)\" (\d+?) (\d+?)/;
+  $user = $1; $filename = $2; $size = $3; $count = $4;
+
+  print_to_window($textwin, "Download from $user for $filename rejected...\n",
+                  $text_status, 1);
+}
+
+sub print_channels
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $entry;
+  my $count = 1;
+  
+  foreach $entry (@channels)
+    {
+      print_to_window($textwin, "$count. $$entry{name}\n", $text_state, 1);
+      $count++;
+    }
+}
+
+sub get_channel
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my %entry;
+
+  $$text =~ /(.+?) (.+?) (.+?)/;
+
+  $entry{"name"} = $1;
+  $entry{"users"} = $2;
+  $entry{"topic"} = $3;
+
+  push @channels, \%entry;
+}
+
+sub nick_register_ok
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $msg;
+
+  $msg = "$username $password $serverport \"nap v0.6\" $speed $email";
+
+  print_debug("Registration", "Sending user info:  $username, $password, $serverport, $speed, $email\n");
+  send_to_server($sock, MSG_REG_INFO, $msg, 1);
+}
+
+sub nick_already_registered
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  print_debug("Registration", "Error, nick already registered!");
+  print_to_window($textwin, "Registration failure: Nick already registered!", $text_state, 1);
+}
+
+sub nick_invalid
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  print_debug("Registration", "Error, invalid nick!");
+  print_to_window($textwin, "Registration failure: Nick invalid!", $text_state, 1);
+}
+
+sub server_message
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  print_debug("Napster", "Server: $$text\n");
+  print_to_window($textwin, "Server: $$text\n", $text_state, 1);
+}
+
+sub setup_upload
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my %upload;
+  my ($user, $filename, $sentname);
+
+  $$text =~ /(.+?) "(.*)"/;
+  $user = $1;
+  $sentname = $2;
+  $filename = $sentname;
+  $filename =~ s/\\/\//g;
+
+  print_debug("Server", "Got upload request from $user for $filename... sending ack\n");
+  print_to_window($textwin, "Got upload request from $user for $filename...\n", $text_state, 1);
+
+  if (($ul_limit >= 0) && ($#uploads + 1 >= $ul_limit))
+    {
+      print_debug("Server", "Upload limit ($ul_limit uploads) reached, ignoring upload request...\n");
+      print_to_window($textwin, "Upload limit ($ul_limit uploads) reached, ignoring upload request...\n", 
+                      $text_state, 1);
+
+      send_to_server($sock, MSG_QUEUE_LIMIT, "$user \"$sentname\" 0");
+
+      return;
+    }
+
+  $upload{"user"} = $user;
+  $upload{"filename"} = $filename;
+  $upload{"sentname"} = $sentname;
+  $upload{"socket"} = undef;
+  $upload{"type"} = "UPLOAD";
+
+  if (defined $ul_speed) { $upload{"limit"} = $ul_speed; }
+
+  push @uploads, \%upload;
+
+  send_to_server($sock, MSG_UPLOAD_ACK, $$text);
+}
+
+sub start_alt_upload
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($upload, $up);
+
+  my ($user, $filename, $sentname, $ip, $port, $id, $speed);
+  my ($result, $song);
+  my $filesize;
+
+  $$text =~ /(\w+) (\d+) (\d+) \"(.*)\" (.+) (\d)/;
+  $user = $1; $sentname = $4; $ip = $2; $port = $3; $id = $5; $speed = $6;
+  $filename = $sentname;
+  $filename =~ s/\\/\//g;
+
+  my ($a, $b, $c, $d) = unpack('C4', pack('L', $ip));
+  $ip = "$a.$b.$c.$d";
+
+  my @stat_info = stat "$::upload/$filename";
+  $filesize = $stat_info[7];
+
+  foreach $up (@uploads)
+    {
+      if (($$up{"user"} eq $user) &&
+          ($$up{"filename"} eq $filename))
+        {
+          $upload = $up; last;
+        }
+    }
+
+  $$upload{"ip"} = $ip;
+  $$upload{"size"} = $filesize;
+  $$upload{"sent"} = 0;
+  $$upload{"file"} = new FileHandle "$::upload$filename";
+  $$upload{"status"} = 2;
+
+  $$upload{"socket"} = new NBSocket("-Remote" => $ip,
+                                    "-Port" => $port,  
+                                    "-Blocking" => 0);
+
+  print_debug("UL", "New ALT UL to $user ($ip:$port), $filename.\n");
+  print_to_window($textwin, "New ALT Upload to $user for $filename...\n", $text_state, 1);
+}
+
+sub join_channel
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  $active_channel = $$text;
+  push @channels, $active_channel;
+
+  print_to_window($textwin, "Joined $$text.\n", $text_state, 1);
+}
+
+sub print_public_message
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  my ($channel, $nick, $msg);
+
+  $$text =~ /(.+?) (.+?) (.*)/;
+
+  $channel = $1; $nick = $2; $msg = $3;
+
+  if ($channel eq $active_channel)
+    {
+      print_to_window($textwin, "<$nick> $msg\n", $text_state, 1);
+    }
+}
+
+sub get_user_entry
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($channel, $user, $sharing, $speed);
+  my %user_entry;
+
+  $$text =~ /(.+?) (.+?) (\d+?) (\d+)/;
+
+  $channel = $1; $user = $2; $sharing = $3; $speed = $4;
+
+  $user_entry{"user"} = $user;
+  $user_entry{"sharing"} = $sharing;
+  $user_entry{"speed"} = $speed;
+
+  push @{ $user_lists{$channel} }, \%user_entry;
+}
+
+sub print_user_list
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $channel = $$text;
+  my $channel_list;
+  my $user;
+  
+  $channel = $active_channel if ($channel eq "");
+
+  $channel_list = $user_lists{$channel};
+
+  print_to_window($textwin, "Userlist for $channel:\n", $text_state, 1);
+
+  foreach $user (@$channel_list)
+    {
+      print_to_window($textwin, "$$user{user} ", $text_state, 1);
+    }
+
+  print_to_window($textwin, "\n\n", $text_state, 1);
+}
+
+sub user_joined
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($channel, $user, $sharing, $speed);
+  my %user_entry;
+
+  $$text =~ /(.+?) (.+?) (\d+?) (\d+)/;
+
+  $channel = $1; $user = $2; $sharing = $3; $speed = $4;
+
+  $user_entry{"user"} = $user;
+  $user_entry{"sharing"} = $sharing;
+  $user_entry{"speed"} = $speed;
+
+  push @{ $user_lists{$channel} }, \%user_entry;
+
+  print_to_window($textwin, "$user has joined $channel.\n", $text_state, 1);
+}
+
+sub user_parted
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($channel, $user, $sharing, $speed);
+  my $channel_list;
+  my $entry;
+  my $count;
+
+  $$text =~ /(.+?) (.+?) (\d+?) (\d+)/;
+
+  $channel = $1; $user = $2; $sharing = $3; $speed = $4;
+
+  foreach $entry (@{ $user_lists{$channel} })
+    {
+      last if ($$entry{"user"} eq $user);
+
+      $count++;
+    }
+
+  splice (@{ $user_lists{$channel} }, $count, 1);
+
+  print_to_window($textwin, "$user has parted $channel.\n", $text_state, 1);
+}
+
+sub print_chan_topic
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $channel;
+  my $topic;
+
+  $$text =~ /(.+?) (.*)/;
+  $channel = $1; $topic = $2;
+
+  print_to_window($textwin, "Topic for $channel: $topic\n", $text_state, 1);
+}
+
+sub print_whois
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($nick, $level, $time, $channels, $status, $shared, 
+      $downloads, $uploads, $speed, $client_info);
+  my $title = "Whois Response:";
+
+  $$text =~ /(.+?) \"(.+?)\" (.+?) "(.*?)" "(.+?)" (.+?) (.+?) (.+?) (.+?) "(.+?)"/;
+
+  $nick = $1; $level = $2; $time = $3; $channels = $4; $status = $5;
+  $shared = $6; $downloads = $7; $uploads = $8; $speed = $9;
+  $client_info = $10;
+
+  my $hours = int($time / 60);
+  my $minutes = int($time % 60);
+
+  $hours = "0" . $hours if ($hours < 10);
+  $minutes = "0" . $minutes if ($minutes < 10);
+
+  $time = "$hours:$minutes";
+
+  print_to_window($textwin, "\n$title\n" . "-" x length($title) . "\n" .
+                  "User: $nick ($level)\n" .
+                  "Time: $time\n" .
+                  "Channels: $channels\n" .
+                  "Status: $status\n" .
+                  "Shared: $shared\n" .
+                  "Downloads: $downloads\n" .
+                  "Uploads: $uploads\n" .
+                  "Speed: $speed_hash{$speed}\n" .
+                  "Client Info: $client_info\n\n", $text_state, 1);
+}
+
+sub print_whowas
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($nick, $level, $last_seen);
+  my $title = "Whowas Response:";
+
+  $$text =~ /(.+?) \"(.+?)\" (\d+)/;
+  $nick = $1; $level = $2; $time = $3;
+
+  print_to_window($textwin, "\n$title\n" . "-" x length($title) . "\n" .
+                  "User: $nick ($level)\n" .
+                  "Last Seen: " . localtime($3) . "\n\n", $text_state, 1);
+}
+
+sub print_private_msg
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($nick, $msg);
+
+  $$text =~ /(.+?) (.*)/;
+  $nick = $1; $msg = $2;
+
+  print_to_window($textwin, "*$nick* $msg\n", $text_state, 1);
+}
+
+sub hotlist_add_ok
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_;
+
+  push @hotlist, $$text;
+
+  print_to_window($textwin, "Addition of $$text to hotlist successful!\n",
+                  $text_state, 1);
+}
+
+sub hotlist_add_err
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  print_to_window($textwin, "Error adding $$text to hotlist!\n", $text_state, 1);
+} 
+
+sub user_sign_on
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $speed);
+
+  $$text =~ /(.+?) (.+)/;
+
+  $user = $1; $speed = $2;
+
+  print_to_window($textwin, "$1 just signed on with a $speed_hash{$speed} connection.\n",
+                  $text_state, 1);
+}
+
+sub user_sign_off
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  print_to_window($textwin, "$$text just signed off.\n", $text_state, 1);
+}
+
+sub send_hotlist
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $file = new FileHandle "$hotlist";
+  my @users = <$file>;
+  my $user;
+
+  foreach $user (@users)
+    {
+      chomp($user);
+      send_to_server($sock, MSG_HOTLIST_ADD, $user);
+    }
+}
+
+sub ping_response
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  send_to_server($sock, MSG_PONG, $$text);
+
+  print_to_window($textwin, "Ping from $$text...\n", $text_state, 1);
+}
+
+sub pong_response
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $curtime = time();
+  my $diff = $curtime - $pings{$$text};
+
+  print_to_window($textwin, "Ping response from $$text in $diff seconds.\n",
+                  $text_state, 1);
+
+  delete $pings{$$text};
+}
+
+sub speed_response
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $speed);
+
+  $$text =~ /(.*?) (.*)/;
+  $user = $1; $speed = $2;
+
+  print_to_window($textwin, "User: $user\n" . 
+                            "Speed: $speed_hash{$speed}\n\n",
+                  $text_state, 1);
+}
+
+sub print_emote
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($channel, $user, $msg);
+
+  $$text =~ /(.*?) (.*?) \"(.*)\"/;
+  $channel = $1; $user = $2; $msg = $3;
+
+  print_to_window($textwin, "* $user $msg\n", $text_status, 1);
+}
+
+sub print_op_msg
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $msg);
+
+  $$text =~ /(.*?) (.*)/;
+  $user = $1; $msg = $2;
+
+  print_to_window($textwin, "<* $user *> $msg\n", $text_status, 1);
+}
+
+sub print_global_msg
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($user, $msg);
+
+  $$text =~ /(.*?) (.*)/;
+  $user = $1; $msg = $2;
+
+  print_to_window($textwin, "<* $user *> $msg\n", $text_status, 1);
+}
+
+sub print_server_stats
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($clients, $servers, $users, $files, $gigs, $chans, $starttime);
+  my ($uptime, $mem);
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  $$text =~ /(.+?) (.+?) (.+?) (.+?) (.+?) (.+?) (.+?) (.+?) (.+?)/;
+
+  $clients = $1; $servers = $2; $users = $3; $files = $4; $gigs = $5;
+  $chans = $6; $starttime = $7; $uptime = $8; $mem = $9;
+
+  &$print("Server Stats\n");
+  &$print("------------\n");
+  &$print("Clients: $clients\n");
+  &$print("Servers: $servers\n");
+  &$print("Users: $users\n");
+  &$print("Files: $files\n");
+  &$print("Gigs: $gigs\n");
+  &$print("Channels: $chans\n");
+  &$print("Time: " . localtime($time) . "\n");
+  &$print("Uptime: $uptime\n");
+  &$print("Memory: $mem\n\n");
+}
+
+sub get_banlist_entry
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($ip, $nick, $reason, $time);
+  my %entry;
+
+  push @banlist, $$text;
+}
+
+sub print_banlist
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my $entry;
+  
+  print_to_window($textwin, "Banned Users\n", $text_status, 1);
+  print_to_window($textwin, "------------\n", $text_status, 1);
+
+  foreach $entry (@banlist)
+    {  
+      print_to_window($textwin, "$entry\n", $text_status, 1)
+    }
+}
+
+sub print_ban_notify
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+  my ($ip, $nick, $reason, $time);
+  my $realip;
+
+  $$text =~ /(\d+?) (.+?) \"(.+?)\" (\d+)/;
+  $ip = $1; $nick = $2; $reason = $3; $time = $4;
+
+  my ($a, $b, $c, $d) = unpack('C4', pack('L', $ip));
+  $realip = "$a.$b.$c.$d";
+  
+  print_to_window($textwin, "$nick ($realip) banned on $time: $reason\n",
+                  $text_status, 1);
+}
+
+sub set_dataport
+{
+  my ($sock, $text, $textwin, $text_state, $cmdwin, $line_state) = @_; 
+
+  $serverport = $$text;
+
+  print_to_window($textwin, "Server requests dataport change to $serverport...\n",
+                  $text_status, 1);
+
+  shutdown_server;
+  setup_server;
+}
+
+####################### Code to perform actual functions ###################
+
+sub do_quit
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  shutdown_prog($sock);
+}
+
+sub do_clear_results
+{
+  splice(@search_results, 0);   # Clear results list;
+}
+
+sub get_search_type
+{
+  my $value = shift;
+  my $type;
+
+  if ($value =~ /^(.+)\+/)
+    {
+      $value = $1;
+      $type = "AT LEAST";
+    }
+  elsif ($value =~ /^(.+)\-/)
+    {
+      $value = $1;
+      $type = "AT BEST";
+    }
+  else
+    {
+      $type = "EQUAL TO";
+    }
+
+  return ($value, $type);
+}
+
+sub do_search
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my ($textstr, $msg, $len);
+  my $ok;
+  my %opts = ("artist" => 1,
+              "count" => 1,
+              "name" => 1,
+              "speed" => 1,
+              "bitrate" => 1,
+              "freq" => 1);
+
+  return if ($#params < 0);
+  my $results = getopts(\%opts, \@params);
+  return if ($results eq undef);
+
+  my $artist = shift @{ $results->{"artist"} };
+  my $count = shift @{ $results->{"count"} };
+  my $file = shift @{ $results->{"name"} };
+  my $speed = shift @{ $results->{"speed"} };
+  my $bitrate = shift @{ $results->{"bitrate"} };
+  my $freq = shift @{ $results->{"freq"} };
+
+  my @speed_params = get_search_type($speed);
+  my @bitrate_params = get_search_type($bitrate);
+  my @freq_params = get_search_type($freq);
+
+  $textstr = "FILENAME CONTAINS \"$artist\" " if (defined $artist);
+  if (defined $max) { $textstr .= "MAX_RESULTS $max "; }
+  else { $textstr .= "MAX_RESULTS 100 "; }
+  $textstr .= "FILENAME CONTAINS \"$file\" " if (defined $file);
+  $textstr .= "LINESPEED \"$speed_params[1]\" $speed_params[0] " if (defined $speed);
+  $textstr .= "BITRATE \"$bitrate_params[1]\" \"$bitrate_params[0]\" " if (defined $bitrate);
+  $textstr .= "FREQ \"$freq_params[1]\" \"$freq_params[0]\" " if (defined $freq);
+
+  $textstr = substr($textstr, 0, -1);
+
+  print_to_window($textwin, "\nSearching... \n", $text_status, 1);
+
+  send_to_server($sock, MSG_SEARCH_REQ, $textstr);
+}
+
+sub do_search_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /search <options>\n\n");
+  &$print("  Searches the server song database for files matching user specified\n");
+  &$print("  constraints.\n\n");
+  &$print("  Options:\n");
+  &$print("    -artist \"<string>\"  - Search for specific artist.\n");
+  &$print("    -name \"<string>\"    - Search for specific name.\n");
+  &$print("    -bitrate <num><mod> - Limit bitrate to <num>.\n");
+  &$print("    -freq <num><mod>    - Limit frequency to <num>.\n");
+  &$print("    -speed <num><mod>   - User connection speed equals <num>.\n");
+  &$print("    -count <num>        - Limit count to <num> (max 100).\n\n");
+  &$print("    Where <mod> is a modifier:\n\n");
+  &$print("      <none> - EQUAL TO search.\n");
+  &$print("      +      - AT LEAST search.\n");
+  &$print("      -      - AT BEST search.\n\n");
+  &$print("  Options can be combined in any order.\n\n");
+}
+
+sub do_filter
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my ($textstr, $msg, $len);
+  my $ok;
+
+  my ($file, $speed, $bitrate, $freq, $user);
+  my %opts = ("file" => 1,
+              "speed" => 1,
+              "bitrate" => 1,
+              "freq" => 1,
+              "user" => 1);
+
+  return if ($#params < 0);
+  my $results = getopts(\%opts, \@params);
+  return if (! defined $results);
+
+  $file = shift @{ $results->{"file"} };
+  $speed = shift @{ $results->{"speed"} };
+  $bitrate = shift @{ $results->{"bitrate"} };
+  $freq = shift @{ $results->{"freq"} };
+  $user = shift @{ $results->{"user"} };
+
+  my $i;
+  my $title = "Search Results";
+  
+  $title .= "\n" . "-" x length($title) . "\n";
+
+  print_to_window($textwin, $title, $text_status, 1);
+
+  for ($i = 0; $i <= $#search_results; $i++)
+    {
+      my $song = $search_results[$i];
+      my $filename = $2;
+
+      $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+      $filename = $2;
+
+      if ((($filename =~ /$file/) || ($file eq undef)) &&
+          (($$song{"speed"} =~ /$speed/) || ($speed eq undef)) &&
+          (($$song{"bitrate"} =~ /$bitrate/) || ($bitrate eq undef)) &&
+          (($$song{"frequency"} =~ /$freq/) || ($freq eq undef)) &&
+          (($$song{"user"} =~ /$user/) || ($user eq undef)))
+        {
+          $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+
+          print_to_window($textwin, 
+                          $i + 1 . " " .
+                          "$2 " .
+                          sprintf("%.2f", $$song{"size"}/1000000) . "mb " .
+                          "$$song{bitrate} $$song{frequeny} $$song{user} " .                      
+                          $speed_hash{$$song{"speed"}} . "\n", 
+                          $text_state, 2);
+        }
+    }
+}
+
+sub do_filter_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /filter <options>\n\n");
+  &$print("  Filters search/browse results using various user-specified regular\n");
+  &$print("  expressions, printing the matched files to the screen.\n\n");
+  &$print("  Options:\n");
+  &$print("    -file \"<regex>\"    - File name matches specified pattern.\n");
+  &$print("    -speed \"<regex>\"   - Match user connection speed.\n");
+  &$print("    -bitrate \"<regex>\" - Match the bitrate of the file.\n");
+  &$print("    -freq \"<regex>\"    - Match the frequency of the file.\n");
+  &$print("    -user \"<regex>\"    - Match the name of user offering the file.\n\n");
+  &$print("  Options can be combined in any order.\n\n");
+}
+
+sub do_send_download_request
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  my @entry_list = split(/[^\d\-]+/, $param_str);
+  my @number_list;
+  
+  foreach $entry (@entry_list)
+    {
+      if ($entry =~ /(\d+?)-(\d+)/)
+        {
+          my $start = $1;
+          my $end = $2;
+          my $i;
+           
+          for ($i = $start; $i <= $end; $i++)
+            { 
+              $number_list[$i] = 1; 
+
+              if (! defined $search_results[$i - 1])
+                {
+                  print_to_window($textwin,
+                                  "Error, entry number $i not found!\n",
+                                  $text_status, 1);
+                  return;
+                }
+
+            }
+        }
+      else
+        { 
+          $number_list[$entry] = 1; 
+
+           if (! defined $search_results[$i - 1])
+             {
+               print_to_window($textwin,
+                               "Error, entry number $i not found!\n",
+                                $text_status, 1);
+               return;
+             }
+        }
+    }
+
+  for ($entry = 0; $entry <= $#number_list; $entry++)
+    {
+      if ($number_list[$entry])
+        {
+          my $user = ${ $search_results[$entry-1] }{"user"};  
+          my $filename = ${ $search_results[$entry-1] }{"name"};
+          my $textstr = "$user \"$filename\"";
+          my ($msg, $len);
+          
+          print_debug("DL", "Sending request... entry = $entry, user = $user, filename = $filename\n");
+          print_to_window($textwin, "Sending request to $user for $filename...\n", $text_status, 1);
+
+          send_to_server($sock, MSG_DL_REQ, $textstr);
+        }
+    }
+
+  print_to_window($textwin, "\n", $text_status, 1);
+}
+
+sub do_get_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /get <entry>,<entry>,<entry>...\n\n");
+  &$print("  Request download of the file entries indicated.  Entries numbers are\n");
+  &$print("  those retrieved from a search or browse request.  As well, selections\n");
+  &$print("  can be specified as individual entries, or in ranges (ie a-b).\n\n");
+  &$print("    eg. /get 1, 3, 8-10, 12\n\n");
+}
+
+sub do_resume
+{  
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $entry = shift @params;
+  my $user = ${ $search_results[$entry-1] }{"user"};  
+  my $filename = ${ $search_results[$entry-1] }{"name"};
+  my $textstr = "$user \"$filename\"";
+  my ($msg, $len);
+  my %download;
+
+  $download{"user"} = $user;
+  $download{"sentname"} = $filename;
+  $download{"resume"} = 1;
+  push @downloads, \%download;
+
+  print_debug("DL", "Sending request... entry = $entry, user = $user, filename = $filename\n");
+  print_to_window($textwin, "Sending request to $user...\n", $text_status, 1);
+  
+  send_to_server($sock, MSG_DL_REQ, $textstr);
+}
+
+sub do_download_list
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $text = $param_str;
+  my $dl;
+  my $count = 1;
+  my $title = "Downloads";
+
+  print_to_window($textwin, 
+                  "\n$title\n" .
+                  "-" x length($title) . "\n", $text_status, 1);
+
+  foreach $dl (@downloads)
+    {
+      print_to_window($textwin,
+                      "$count. $$dl{local_name}: $$dl{received} ($$dl{size}), $$dl{speed} Kb/s\n",
+                      $text_status, 1);
+      $count++;
+    }
+}
+
+sub do_upload_list
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $text = $param_str;
+  my $up;
+  my $count = 1;
+  my $title = "Uploads";
+
+  print_to_window($textwin, 
+                  "\n$title\n" .
+                  "-" x length($title) . "\n", $text_status, 1);
+
+  foreach $up (@uploads)
+    {
+      my $speed_str = sprintf("%.2g", $$up{"speed"});
+
+      print_to_window($textwin,
+                      "$count. $$up{filename}: $$up{sent} ($$up{size}), $speed_str Kb/s\n",
+                      $text_status, 1);
+      $count++;
+    }
+}
+
+sub do_upload_op
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my ($speed, $kill);
+  my $ok;
+
+  my %opts = ("speed" => 2,
+              "kill" => 1);
+
+  return if ($#params < 0);
+  my $results = getopts(\%opts, \@params);
+  return if (! defined $results);
+
+  while ($#{ $results->{"speed"} } >= 0)
+    {
+      my $speed_ul = shift @{ $results->{"speed"} };
+      my $speed = shift @{ $results->{"speed"} };
+      my $ul = $uploads[$speed_ul];
+
+      if ((! defined $ul) && (defined $speed_ul))
+        {
+          print_to_window($textwin, "Error, upload number $speed_ul not found!\n",
+                          $text_status, 1);
+        }
+      else
+        {  
+          print { $$ul{"write"} } "LIMIT $speed\n" if (defined $speed);
+        }
+    }
+
+  while ($#{ $results->{"kill"} } >= 0)
+    {
+      my $kill_entry = shift @{ $results->{"kill"} };
+      kill_ul($sock, $kill_entry - 1, $textwin, $text_status) if (defined $kill_entry);
+    }
+}
+
+sub do_ul_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /ul <command> <num>\n\n");
+  &$print("  Performs some operation on upload number <num>.\n");
+  &$print("  Upload numbers correspond to those from the /ustatus command.\n\n");
+  &$print("  Commands:\n");
+  &$print("    -KILL        - Kill the transfer\n");
+  &$print("    -SPEED <num> - Set transfer speed to <num> b/s\n\n");
+}
+
+sub do_download_op
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $ok;
+  my %opts = ("kill" => 1);
+
+  return if ($#params < 0);
+  my $results = getopts(\%opts, \@params);
+  return if (! defined $results);
+
+  while ($#{ $results->{"kill"} } >= 0)
+    {
+      my $entry = shift @{ $results->{"kill"} };
+      my $dl = $downloads[$entry - 1];
+      
+      if (! defined $dl)
+        { 
+          print_to_window($textwin, "Error, download number $entry not found!\n",
+                          $text_status, 1);  
+        }
+      
+      kill_dl($sock, $entry - 1, $textwin, $text_status) if (defined $dl);
+    }
+}
+
+sub do_dl_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /dl <command> <num>\n\n");
+  &$print("  Performs some operation on download number <num>.\n");
+  &$print("  Download numbers correspond to those from the /dstatus command.\n\n");
+  &$print("  Commands:\n");
+  &$print("    -KILL - Kill the transfer\n\n");
+}
+
+sub do_eval
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $ok;
+  
+  my %opts = ("file" => 1);
+
+  my $results = getopts(\%opts, \@params, 0) if ($#params >= 0);
+  my $filename = shift @{ $results->{"file"} };
+
+  print_to_window($textwin, "$filename\n");
+
+  if (defined $filename)
+    {
+      my $file = new FileHandle $filename;
+
+      if (! defined $file)
+        {
+          print_to_window($textwin, "Error opening file: $params[1]\n", $text_status, 1);
+          return;
+        }
+
+      $cmd = join(" ", <$file>);
+      $file->close();
+    }
+  else  
+    {
+      $cmd = join(" ", $param_str);
+    }
+
+  eval "$cmd";
+
+  if ($@ ne undef)
+    {
+      print_to_window($textwin, "$@", $text_status, 1);
+    }
+}
+
+sub do_clear
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  clear_window($textwin, $text_status);
+}
+
+sub do_reconnect
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  print_to_window($textwin, "Getting a host...\n", $text_status, 1);
+  setup_new_connection();
+  print_to_window($textwin, "Got $host[0]:$host[1]...\n", $text_status, 1);
+}
+
+sub do_list_channels
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_LIST_CHANNELS, undef);
+}
+
+sub do_chan_join
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  if (grep /^\Q$param_str\E$/, @channels)
+    {
+      print_to_window($textwin, "Switching to $param_str...\n", 
+                      $text_status, 1);
+
+      $active_channel = $param_str;
+    }
+  else
+    {
+      send_to_server($sock, MSG_JOIN, $param_str);
+    }
+}
+
+sub do_chan_part
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_PART, $param_str);
+
+  delete $user_lists{$param_str};
+  @channels = grep(!/^$param_str$/, @channels);
+  $active_channel = $channels[0];
+
+  print_to_window($textwin, "Now in $active_channel...\n",
+                  $text_status, 1) if ($active_channel ne undef);
+}
+
+sub do_send_public
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_SEND_MSG, "$active_channel $param_str");
+}
+
+sub do_browse
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  print_debug("Browse", "Requesting from $param_str\n");
+  send_to_server($sock, MSG_BROWSE, $param_str);
+}
+
+sub do_send_whois
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_WHOIS, $param_str);
+}
+
+sub do_send_private_msg
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my ($nick, $msg);
+
+  $param_str =~ /(.+?) (.*)/;
+
+  send_to_server($sock, MSG_PRIVATE, "$1 $2");
+
+  print_to_window($textwin, ">$username< $2\n", $text_status, 1);
+}
+
+sub do_get_user_list
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  splice(@{ $user_lists{$active_channel}}, 0);
+
+  send_to_server($sock, MSG_USER_LIST_2, "$active_channel");
+}
+
+sub do_hotlist
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my %opts = ("add" => 1,
+              "del" => 1,
+              "list" => 0);
+
+  my $results = getopts(\%opts, \@params) if ($#params >= 0);
+  return if (! defined $results);
+
+  while ($#{ $results->{"add"} } >= 0)
+    {
+      my $add_name = shift @{ $results->{"add"} };
+
+      print_to_window($textwin, "Adding $add_name to hotlist...\n", $text_status, 1);
+      send_to_server($sock, MSG_HOTLIST_ADD, "$add_name");
+    }
+
+  while ($#{ $results->{"del"} } >= 0)
+    {
+      my $del_name = shift @{ $results->{"del"} };
+
+      print_to_window($textwin, "Removing $del_name from hotlist...\n",
+                      $text_status, 1);
+
+      my $i;
+      my $found = 0;
+
+      for ($i = 0; $i <= $#hotlist; $i++)
+        {
+          if ($hotlist[$i] eq $del_name)
+            {
+              splice @hotlist, $i, 1;
+              $found = 1;
+              last;
+            }
+        }
+
+      if (! $found)
+        {
+          print_to_window($textwin, "Error, $del_name not in hotlist!\n",
+                          $text_status, 1);
+        }
+      else
+        {
+          send_to_server($sock, MSG_HOTLIST_REMOVE, "$del_name");
+        }
+    }
+
+  if (defined $results->{"list"})
+    {
+      my $t_name = "Hotlist";
+      my $title = "\n" . $t_name . "\n" . "-" x length($t_name) . "\n";
+      my $user;
+
+      print_to_window($textwin, $title, $text_status, 1);
+
+      foreach $user (@hotlist)
+        {
+          print_to_window($textwin, "$user\n", $text_status, 1);
+        }
+
+      print_to_window($textwin, "\n", $text_status, 1);
+    }
+}
+
+sub do_hotlist_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /hotlist <command>\n\n");
+  &$print("  Used to manage hotlist entries.\n\n");
+  &$print("  Commands:\n");
+  &$print("    -ADD <user> - Add <user> to your hotlist.\n");
+  &$print("    -DEL <user> - Remote <user> from your hotlist.\n");
+  &$print("    -LIST       - Display your current hotlist.\n\n"); 
+}
+
+sub do_page_up
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  window_page_up($textwin, $text_status);
+}
+
+sub do_page_down
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  window_page_down($textwin, $text_status);
+}
+
+sub do_about
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+  my $title = "About Snap";
+
+  &$print($title . "\n" . "-" x length($title) . "\n\n");
+
+  &$print("Version: $CLIENT_VERSION\n");
+  &$print("Author: Brett Kosinski\n\n");
+}
+
+sub do_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $cmd = shift @params;
+  my $line = "";
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  if ($cmd eq undef)
+    {
+      &$print("Usage: /help <cmd>\n\n");
+      &$print("  The following catagories are available.  Note, names are case\n");
+      &$print("  sensitive\n\n");
+      &$print("  Commands:\n\n    ");
+
+      foreach $cmd (sort(keys %help_hash))
+        {
+          my $cmd_text = $cmd . " " x (20 - length($cmd));
+
+          if (length($line) + length($cmd_text) < $scr_width - 4)
+            {
+              &$print($cmd_text);
+              $line .= $cmd_text;
+
+              next;
+            }
+
+          &$print("\n    $cmd_text");
+
+          $line = "    $cmd_text";
+        }
+
+      &$print("\n\n");
+
+      return;
+    }
+  
+  $cmd = "/$cmd" if (! defined $help_hash{$cmd});
+  my $help_info = $help_hash{$cmd};
+
+  if ($help_info ne undef)
+    {
+      if ($help_info =~ /^CODE/)
+        {
+          &$help_info($sock, $textwin, $text_status, $cmdwin, $cmd_status);
+        }
+      else
+        { 
+          &$print("$help_info");
+        }
+    }
+  else
+    {
+      print_to_window($textwin, "Error, help catagory not found!\n",
+                      $text_status, 1);
+    }
+}
+
+sub do_exec
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my %opts = ("out" => 0,
+              "msg" => 1);
+
+  my $results = getopts(\%opts, \@params, undef, 1) if ($#params >= 0);
+  return if (! defined $results);
+
+  my $cmd = join(" ", @params) . "|";
+  my $handle = new FileHandle;
+  my $line;
+  my $out = $results->{"out"};
+  my $user = shift @{ $results->{"msg"} };
+
+  print_debug("Exec", "Launching $cmd...\n");
+  open($handle, $cmd);
+
+  while ($line = <$handle>)
+    {
+      print_to_window($textwin, $line, $text_status, 1)
+        if ((! defined $out) && (! defined $user));
+
+      do_send_public($sock, $textwin, $text_status,
+                     $cmdwin, $cmd_status, $line) 
+        if (defined $out);
+
+      do_send_private_msg($sock, $textwin, $text_status,
+                          $cmdwin, $cmd_status, "$user $line")
+        if (defined $user);
+    }
+}
+
+sub do_exec_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /exec [options] <command>\n\n");
+  &$print("  Executes a system command.  With no options specified, output\n");
+  &$print("  goes to the screen.  Other options are:\n\n");
+  &$print("  Options:\n");
+  &$print("    -OUT        - Display output to current channel.\n");
+  &$print("    -MSG <user> - Send output to specified user.\n\n");
+  &$print("  Note, output options can be combined.\n\n");
+}
+
+sub do_ping
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $user = shift @params;
+
+  send_to_server($sock, MSG_PING, $user);
+
+  $pings{$user} = time();
+
+  print_to_window($textwin, "Sending ping to $user...\n", $text_status, 1);
+}
+
+sub do_speed
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my $user = shift @params;
+
+  send_to_server($sock, MSG_SPEED, $user);
+
+  print_to_window($textwin, "Request $user\'s speed...\n", $text_status, 1);
+}
+
+sub do_admin
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my %opts = ("kill" => 1,
+              "ban" => 1,
+              "unban" => 1,
+              "banlist" => 0,
+              "nuke" => 1,
+              "unnuke" => 1,
+              "level" => 2,
+              "connect" => 1,
+              "disconnect" => 2,
+              "kills" => 2,
+              "remove" => 2,
+              "stats" => 0,
+              "config" => 1,
+              "reset" => 1,
+              "setport" => 2,
+              "version" => 0);
+  
+  my $results = getopts(\%opts, \@params);
+
+  return if (! defined $results);  
+
+  while ($#{ $results->{"kill"} } >= 0)
+    {
+      my $user = shift @{ $results->{"kill"} };
+
+      send_to_server($sock, MSG_USER_KILL, "$user");
+      print_to_window($textwin, "Requesting disconnect for $user...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"ban"} } >= 0)
+    {
+      my $user = shift @{ $results->{"ban"} };
+
+      send_to_server($sock, MSG_USER_BAN, "$user");
+      print_to_window($textwin, "Requesting ban of $user...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"unban"} } >= 0)
+    {
+      my $user = shift @{ $results->{"unban"} };
+
+      send_to_server($sock, MSG_USER_UNBAN, "$user");
+      print_to_window($textwin, "Requesting unban of $user...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"nuke"} } >= 0)
+    {
+      my $user = shift @{ $results->{"nuke"} };
+
+      send_to_server($sock, MSG_USER_NUKE, "$user");
+      print_to_window($textwin, "Requesting account deletion for $user...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"unnuke"} } >= 0)
+    {
+      my $user = shift @{ $results->{"unnuke"} };
+
+      send_to_server($sock, MSG_USER_UNNUKE, "$user");
+      print_to_window($textwin, "Requesting account restore for $user...\n", $text_status, 1);      
+    }
+
+  while ($#{ $results->{"level"} } >= 0)
+    {
+      my $user = shift @{ $results->{"level"} };
+      my $level = shift @{ $results->{"level"} };
+
+      send_to_server($sock, MSG_MOD_USER_LEVEL, "$user $level");
+      print_to_window($textwin, "Attempting to set $user to $level...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"connect"} } >= 0)
+    {
+      my $name = shift @{ $results->{"connect"} };
+      my ($server, $port);
+
+      if ($name =~ /(.*):(.*)/)
+        {
+          $server = $1; $port = $2;
+
+          send_to_server($sock, MSG_SERVER_CONNECT, "$server $port");
+          print_to_window($textwin, "Attempting to connect to $name\n", $text_status, 1);
+        }
+      else
+        {
+          print_to_window($textwin, "Invalid server specified!\n", $text_status, 1);
+        }
+    }
+
+  while ($#{ $results->{"disconnect"} } >= 0)
+    {
+      my $server = shift @{ $results->{"disconnect"} };
+      my $reason = shift @{ $results->{"disconnect"} };
+
+      send_to_server($sock, MSG_SERVER_DISCONNECT, "$server $reason");
+      print_to_window($textwin, "Attempting to disconnect $server\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"kills"} } >= 0)
+    {
+      my $server = shift @{ $results->{"kills"} };
+      my $reason = shift @{ $results->{"kills"} };
+
+      send_to_server($sock, MSG_SERVER_KILL, "$server $reason");
+      print_to_window($textwin, "Attempting to kill $server\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"remove"} } >= 0)
+    {
+      my $server = shift @{ $results->{"remove"} };
+      my $reason = shift @{ $results->{"remove"} };
+
+      send_to_server($sock, MSG_SERVER_REMOVE, "$server $reason");
+      print_to_window($textwin, "Attempting to remove $server\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"config"} } >= 0)
+    {
+      my $cfgstring = shift @{ $results->{"config"} };
+
+      send_to_server($sock, MSG_SERVER_CFG, "$cfgstring");
+      print_to_window($textwin, "Sending configuration to server...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"reset"} } >= 0)
+    {
+      my $cfgvar = shift @{ $results->{"reset"} };
+
+      send_to_server($sock, MSG_SERVER_RELOAD_CFG, "$cfgvar");
+      print_to_window($textwin, "Requesting reset of $cfgvar...\n", $text_status, 1);
+    }
+
+  while ($#{ $results->{"setport"} } >= 0)
+    {
+      my $user = shift @{ $results->{"setport"} };
+      my $port = shift @{ $results->{"setport"} };
+
+      send_to_server($sock, MSG_SET_PORT, "$user $port");
+      print_to_window($textwin, "Requesting $user set dataport to $port...\n", $text_status, 1);
+    }
+
+  if (defined $results->{"stats"})
+    {
+      send_to_server($sock, MSG_OPENNAP_STATS, "");
+      print_to_window($textwin, "Requesting server stats...\n", $text_status, 1);
+    }
+
+  if (defined $results->{"banlist"})
+    {
+      send_to_server($sock, MSG_SHOW_BANLIST, "");
+      print_to_window($textwin, "Requesting server ban list...\n", $text_status, 1);
+
+      splice(@banlist, 0);
+    }
+
+  if (defined $results->{"version"})
+    {
+      send_to_server($sock, MSG_GET_SERVER_VERSION, "");
+      print_to_window($textwin, "Requesting server version...\n", $text_status, 1);
+    }
+}
+
+sub do_admin_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /admin <command> <val> <command2> <val2> ...\n\n");
+  &$print("  Various administrative functions. * == Opennap only\n\n");
+  &$print("    -KILL <user>                  - Request disconnect of <user>.\n");
+  &$print("    -BAN <user>                   - Request ban of <user>.\n");
+  &$print("    -UNBAN <user>                 - Request unban of <user>.\n");
+  &$print("    -BANLIST                      - Show ban list for server.\n");
+  &$print("    -NUKE <user>                  - Request deletion of <user>.\n");
+  &$print("    -UNNUKE <user>                - Request restoration of <user>.\n");
+  &$print("    -LEVEL <user> <level>         - Set <user> to level <level>.\n");
+  &$print("    -SETPORT <user> <port>        - Request user set dataport to <port>.\n");
+  &$print("    -CONFIG \"<config string>\"     - Send configuration string to server.\n");
+  &$print("    -RESET <config variable>      - Reset config variable to default value.\n");
+  &$print("    -VERSION                      - Request the server version.\n");
+  &$print("  * -STATS                        - Request server statistics.\n");
+  &$print("  * -CONNECT <server>             - Attempt to connect to <server>.\n");
+  &$print("  * -DISCONNECT <server> <reason> - Sever connection to <server>.\n");
+  &$print("  * -KILLS <server> <reason>      - Cause <server> to shut down.\n");
+  &$print("  * -REMOVE <server> <reason>     - Requests <server> be removed from table.\n\n");
+}
+
+sub do_emote
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_EMOTE, "$active_channel \"$param_str\"");
+}
+
+sub do_op_msg
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_OP_MSG, "$param_str");
+}
+
+sub do_global_msg
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+
+  send_to_server($sock, MSG_GLOBAL_MSG, "$param_str");
+}
+
+sub do_config
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @params) = @_;
+  my %opts = ("speed" => 1,
+              "pass" => 1,
+              "email" => 1,
+              "port" => 1);
+  my $results = getopts(\%opts, \@params);
+  return if (! defined $results);
+
+  my $speed = shift @{ $results->{"speed"} };
+  my $pass = shift @{ $results->{"pass"} };
+  my $email = shift @{ $results->{"email"} };
+  my $port = shift @{ $results->{"port"} };
+
+  if (defined $speed)
+    {
+      print_to_window($textwin, "Changing speed to $speed_hash{$speed}...\n",
+                      $text_status, 1);
+      send_to_server($sock, MSG_CHANGE_SPEED, $speed);
+    }
+
+  if (defined $pass)
+    {
+      print_to_window($textwin, "Changing password to $pass...\n",
+                      $text_status, 1);
+      send_to_server($sock, MSG_CHANGE_PASSWORD, $pass);
+    }
+
+  if (defined $email)
+    {
+      print_to_window($textwin, "Changing email to $email...\n",
+                      $text_status, 1);
+      send_to_server($sock, MSG_CHANGE_EMAIL, $email);
+    }
+
+  if (defined $port)
+    {
+      print_to_window($textwin, "Changing port to $port...\n",
+                      $text_status, 1);
+      send_to_server($sock, MSG_CHANGE_PORT, $port);
+
+      $serverport = $port;
+
+      shutdown_server;
+      setup_server;
+    }
+}
+
+sub do_config_help
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $print = sub { print_to_window($textwin, shift, $text_status, 1); };
+
+  &$print("Usage: /config <setting> <val> <setting> <val2> ...\n\n");
+  &$print("  This command is used to change various user settings on the\n");
+  &$print("  fly.  Note, you must still change your RC file to reflect\n");
+  &$print("  any changes you make here.\n\n");
+  &$print("    -SPEED    - Change reported speed.\n");
+  &$print("    -PASSWORD - Change login password.\n");
+  &$print("    -EMAIL    - Change email address.\n");
+  &$print("    -PORT     - Change local server port.\n\n");
+}
+
+sub do_request_version
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+
+  print_to_window($textwin, "Requesting server version...\n", $text_status, 1);
+
+  send_to_server($sock, MSG_GET_SERVER_VERSION, "");
+}
+
+sub do_command
+{
+  my ($sock, $textwin, $text_status, $cmdwin, $cmd_status) = @_;
+  my $text = $$cmd_status{"line"};
+  my $cmd;
+  my $params;
+  my $param_str;
+  my @arr;
+  my @parts;
+
+  if ($text =~ /^\//)
+    {
+      eval '&quotewords("\s+", 1, $text)';
+      if ($@)
+        {
+          @parts = split(/\s+/, $text);
+          $cmd = shift @parts;
+          $param_str = join(" ", @parts);
+        }
+      else
+        {
+          @parts = &quotewords('\s+', 1, $text);
+          shift @parts;
+          $param_str = join(" ", @parts);
+
+          @parts = &quotewords('\s+', 0, $text);
+          $cmd = shift @parts;
+        }
+
+      @arr = @{ $command_hash{$cmd} };    
+    }
+  else
+    {     
+      @arr = @{ $command_hash{"/send"} };     
+
+      $param_str = $text;
+    }
+
+  my $func;
+
+  foreach $func (@arr)
+    {
+      &$func($sock, $textwin, $text_status, $cmdwin, $cmd_status, $param_str, @parts); 
+    }
+}
+
+############################### Main Program Loop ##########################
+
+sub kill_dl
+{  
+  my ($sock, $dnum, $textwin, $text_status) = @_;
+
+  return if (! defined $dnum);
+
+  print_debug("DL", "Attempting to kill download number $dnum...\n");
+
+  if (defined $downloads[$dnum])
+    {
+      my $dl = $downloads[$dnum];
+
+      splice(@downloads, $dnum, 1);
+      if ($$dl{"pid"} ne undef) { kill 2, $$dl{"pid"}; }
+
+      print_to_window($textwin, "Killed download of \"$$dl{local_name}\"...\n", $text_status, 1);
+      send_to_server($sock, MSG_DONE_DOWNLOADING);
+    }
+  else
+    {
+      print_to_window($textwin, "No such download entry!\n", $text_status, 1);
+    }
+}
+
+sub kill_ul
+{
+  my ($sock, $unum, $textwin, $text_status) = @_;
+
+  return if (! defined $unum);
+
+  if (defined $uploads[$unum])
+    {
+      my $ul = $uploads[$unum];
+
+      splice(@uploads, $unum, 1);
+      if ($$ul{"pid"} ne undef) { kill 2, $$ul{"pid"}; }
+
+      print_to_window($textwin, "Killed upload of \"$$ul{filename}\"...\n", $text_status, 1);
+      send_to_server($sock, MSG_DONE_UPLOADING);
+    }
+  else
+    {
+      print_to_window($textwin, "No such upload entry!\n", $text_status, 1);
+    }
+}
+
+sub download_rcv
+{
+  my ($sock, $dlsock, $textwin, $text_status, $cmdwin, $line_state) = @_;
+  my @rcv;
+  my $msg;
+  my ($dl, $dl_entry);
+  my $dnum = 1;
+  my $pid;
+  my ($read_child, $write_parent) = (new FileHandle, new FileHandle);
+  my ($read_parent, $write_child) = (new FileHandle, new FileHandle);
+
+  $dl = undef;
+
+  foreach $dl_entry (@downloads)
+    {
+      $dnum++;
+      next if ($$dl_entry{"socket"} eq undef);
+
+      if ($$dl_entry{"socket"}->socket() eq $dlsock)
+        {
+          $dl = $dl_entry;
+          last;
+        }
+    }
+
+  if (! defined $dl) { return; }
+
+  pipe $read_child, $write_parent;
+  pipe $read_parent, $write_child;
+
+  $write_parent->autoflush(1);
+  $write_child->autoflush(1);
+
+  if (($pid = fork()) != 0)
+    {
+      $$dl{"socket"} = undef;
+      $$dl{"pid"} = $pid;
+      $$dl{"read"} = $read_parent;
+      $$dl{"write"} = $write_parent;
+
+      send_to_server($sock, MSG_DOWNLOADING);
+
+      return;
+    }
+
+  die "$!\n" if ($pid eq undef); 
+
+  $SIG{INT} = sub {
+    shutdown($$dl{"socket"}->socket(), 2);
+    $$dl{"file"}->close();
+    print_debug("DL", "Child dying off...\n");
+    exit(0);
+  };
+
+  my $s = new IO::Select;
+  $s->add($read_child, $$dl{"socket"}->socket());
+
+  while (1)
+    {
+      my @ready = $s->can_read();
+      my $fh;
+
+      if ($$dl{"status"} == 0)
+        {
+          @rcv = $$dl{"socket"}->read("-Length" => 1);
+          next if ($rcv[0] == 0);
+          
+          my $msg = "GET";
+          $$dl{"socket"}->write("-Data" => $msg, "-Length" => length($msg));
+          print_debug("DL", "Sending $msg\n");
+          
+          $msg = "$username \"" . $$dl{"sentname"} . "\" $$dl{pos}";
+          $$dl{"socket"}->write("-Data" => $msg, "-Length" => length($msg));
+          
+          print_debug("DL", "Sending $msg\n");
+          
+          $$dl{"status"} = 1;
+          next;
+        }
+      elsif ($$dl{"status"} == 1)
+        {
+          @rcv = $$dl{"socket"}->read("-Length" => 1);
+          $$dl{"buffer"} .= $rcv[1];
+          next if ($rcv[0] == 0);
+          next if ($$dl{"buffer"} ne $$dl{"size"});
+          
+          print $write_child "PRINT Transferring $$dl{filename}...\n";
+          
+          $$dl{"received"} = 1;
+          $$dl{"status"} = 2;
+          next;
+        }
+      elsif ($$dl{"status"} != 2)
+        {
+          next;
+        }
+
+      my $cur_time = time();
+      $$dl{"time"} = $cur_time if (! defined $$dl{"time"});
+      
+      @rcv = $$dl{"socket"}->read();
+      next if (! defined $rcv[0]);
+      
+      if ($rcv[0] != 0)
+        {
+          $$dl{"received"} += $rcv[0];
+          $$dl{"file"}->print($rcv[1]);
+          print $write_child "LENGTH $$dl{received}\n";
+        }
+      else
+        {
+          shutdown($$dl{"socket"}->socket(), 2);
+          $$dl{"file"}->close();
+          splice(@downloads, $i, 1);
+          print $write_child "PRINT Finished transferring $$dl{localname}... $!\n";
+          print_debug("DL", "Finished transferring $$dl{localname} (got $$dl{received})...\n");
+          exit(0);
+        }
+      
+      if ($cur_time - $$dl{"time"} > 0)
+        {
+          $$dl{"speed"} = $$dl{"received"} / (time() - $$dl{"time"});
+          print $write_child "SPEED $$dl{speed}\n";
+        }      
+    }
+}
+
+sub upload_send
+{
+  my ($sock, $upsock, $textwin, $text_status, $cmdwin, $line_state) = @_;
+  my ($up, $up_entry);
+  my $up_num = -1;
+  my $filename;
+  my ($read_child, $write_parent) = (new FileHandle, new FileHandle);
+  my ($read_parent, $write_child) = (new FileHandle, new FileHandle);
+
+  $up = undef;
+
+  foreach $up_entry (@uploads)
+    {
+      $up_num++;
+      next if ($$up_entry{"socket"} eq undef);
+
+      if ($$up_entry{"socket"}->socket() eq $upsock)
+        {
+          $up = $up_entry;
+          last;
+        }
+    }
+
+  return if (! defined $up);
+
+  pipe $read_child, $write_parent;
+  pipe $read_parent, $write_child;
+
+  $write_parent->autoflush(1);
+  $write_child->autoflush(1);
+
+  if (($pid = fork()) != 0)
+    {
+      $$up{"socket"} = undef;
+      $$up{"pid"} = $pid;
+      $$up{"read"} = $read_parent;
+      $$up{"write"} = $write_parent;
+
+      send_to_server($sock, MSG_UPLOADING);
+
+      return;
+    }
+
+  die "$!\n" if ($pid eq undef);
+
+  $SIG{INT} = sub {
+    shutdown($$up{"socket"}->socket(), 2);
+    $$up{"file"}->close();
+    print_debug("UL", "Child dying off...\n");
+    exit(0);
+  };
+
+  my $s1 = new IO::Select;
+  my $s2 = new IO::Select;
+  my @ready;
+
+  $s1->add($$up{"socket"}->socket());
+  $s2->add($read_child);
+
+  while (1)
+    {
+      @ready = IO::Select->select($s2, $s1, undef);
+
+      if ($#{ $ready[0] } >= 0)
+        {
+          my $line = <$read_child>;
+
+          $line =~ /(.+?) (.*)/;
+
+          if ($1 eq "LIMIT")
+            {
+              $$up{"limit"} = $2;
+
+              print $write_child "PRINT Setting speed limit to $$up{limit}...\n";
+            }
+        }
+
+      next if ($#{ $ready[1] } < 0);
+
+      if ($$up{"status"} == 0)
+        {
+          print_debug("UL", "Sending size ($$up{size})...\n");
+          
+          $$up{"socket"}->write("-Data" => "$$up{size}",
+                                "-Length" => length("$$up{size}"));
+          
+          $$up{"status"} = 1;
+          next;
+        }
+      elsif ($$up{"status"} == 2)
+        {
+          $$up{"socket"}->write("-Data" => "SEND", "-Length" => length("SEND"));
+          
+          print_debug("UL", "Sending SEND...\n");
+          $$up{"status"} = 3;
+          next;
+        }
+      elsif ($$up{"status"} == 3)
+        {
+          my @data = $$up{"socket"}->read();
+ 
+          next if ((! defined $data[0]) || ($data[0] == 0));
+
+          $$up{"status"} = 4;
+
+          next;
+        }
+      elsif ($$up{"status"} == 4)
+        {
+          my $msg = "$username \"$$up{sentname}\" $$up{size}";
+          
+          $$up{"socket"}->write("-Data" => $msg, "-Length" => length($msg));
+          
+          print_debug("UL", "Sending info... $msg\n");
+          
+          $$up{"status"} = 5;
+          next;
+        }
+      elsif ($$up{"status"} == 5)
+        {
+          my @data = $$up{"socket"}->read();
+          $$up{"pos"} = $data[1];
+
+          next if ((! defined $data[0]) || ($data[0] == 0));
+
+          print_debug("UL", "Got upload position: $$up{pos}\n");
+          
+          $$up{"status"} = 1;
+          
+          next;
+        }
+      elsif ($$up{"status"} != 1)
+        {
+          next;
+        }
+      
+      my $cur_time = Time::HiRes::gettimeofday();
+      $$up{"time"} = $cur_time if (! defined $$up{"time"});  
+      $$up{"start_time"} = $cur_time if (! defined $$up{"start_time"});
+      
+      if (($$up{"limit"} > 0) &&
+          ($cur_time - $$up{"time"} < UL_BLOCK_LEN / $$up{"limit"}))
+        {
+          my $count = (UL_BLOCK_LEN / $$up{"limit"} -
+                      ($cur_time - $$up{"time"}));
+
+          Time::HiRes::sleep($count);
+        }
+      
+      if ($cur_time - $$up{"time"} > 0)
+        {
+          $$up{"speed"} = $$up{"sent"} / ($cur_time - $$up{"start_time"}); 
+          $$up{"time"} = $cur_time;
+          $$up{"len_sample"} = 0;
+
+          print $write_child "SPEED $$up{speed}\n";
+        }
+      
+      if ($$up{"pos"} > 0)
+        {
+          seek $$up{"file"}, $$up{"pos"}, 0;
+          $$up{"pos"} = 0;
+        }
+      
+      my $datablock;
+      my $datasize = sysread($$up{"file"}, $datablock, UL_BLOCK_LEN);
+      my $error = 0;
+      
+      if ($datasize > 0)
+        {
+          my $sent_amt;
+
+          $SIG{PIPE} = sub {
+            $error = 1;
+            return;
+          };
+          
+          $sent_amt = $$up{"socket"}->write("-Data" => $datablock,
+                                            "-Length" => $datasize);
+
+          if (! $error)
+            {
+              $$up{"sent"} += $sent_amt;
+              $$up{"len_sample"} += $sent_amt;
+
+              print $write_child "LENGTH $$up{sent}\n";
+          
+              next;
+            }
+        }
+      
+      if ($error)
+        {
+          print_debug("UL", "Upload to $$up{user} terminated abnormally...\n");
+          print $write_child "PRINT Upload to $$up{user} terminated abnormally...\n";
+        }
+      
+      shutdown($$up{"socket"}->socket(), 2);
+      $$up{"file"}->close();
+      splice(@uploads, $up_num, 1);
+      
+      print_debug("UL", "Upload to $$up{user} of $$up{filename} terminating (sent $$up{sent})...\n");
+      print $write_child "PRINT Upload to $$up{user} of $$up{filename} terminating...\n";
+      exit(0);
+    }
+}
+
+sub transfer_cmd
+{
+  my ($sock, $fh, $textwin, $text_status, $cmdwin, $line_state) = @_;
+  my $trans;
+  my $trans_entry;
+  my $num;
+  my @transfers = @downloads;
+  push @transfers, @uploads;
+
+  $trans = undef;
+
+  foreach $trans_entry (@transfers)
+    {
+      $num++;
+
+      if ($$trans_entry{"read"} eq $fh)
+        {
+          $trans = $trans_entry;
+          last;
+        }
+    }
+
+  if (! defined $trans) { return; }
+
+  my $line = <$fh>;
+  my @lines = split(/\n/, $line);
+
+  foreach $line (@lines)
+    {
+      if ($line =~ /^PRINT (.*)/)
+        {
+          print_to_window($textwin, "$1\n", $text_status, 1);
+        }
+      elsif ($line =~ /^LENGTH (.*)/)
+        {
+          my $mesg;
+          my $func;
+
+          $$trans{"received"} = $1 if ($$trans{"type"} eq "DOWNLOAD");
+          $$trans{"sent"} = $1 if ($$trans{"type"} eq "UPLOAD");
+
+          $mesg = MSG_RECV_DL_BLOCK if ($$trans{"type"} eq "DOWNLOAD");
+          $mesg = MSG_SENT_UL_BLOCK if ($$trans{"type"} eq "UPLOAD");
+
+          my @arr = @{ $code_hash{$mesg} };
+       
+          foreach $func (@arr)
+            {
+              &$func($sock, undef, $textwin, $text_status, $cmdwin, $line_state);
+            }
+        }
+      elsif ($line =~ /^SPEED (.*)/)
+        {
+          $$trans{"speed"} = $1;
+        }
+    }
+
+  return;
+}
+
+sub handle_server_request
+{
+  my ($socket, $textwin, $text_status, $cmdwin, $line_state) = @_;
+  my ($conn_entry, $conn);
+  my $conn_num = 0;
+  my $dl;
+  my $up;
+
+  foreach $conn_entry (@connections)
+    {
+      if ($$conn_entry{"socket"}->socket() eq $socket)
+        {
+          $conn = $conn_entry;
+          last;
+        }
+
+      $conn_num++;
+    }
+
+  return if ($conn eq undef);
+
+  if ($$conn{"status"} == 0)
+    {
+      print_debug("Server", "Connect from $$conn{ip}, sending ack...\n");
+      print_to_window($textwin, "Connect from $$conn{ip}...\n", $text_state, 1);
+
+      $$conn{"socket"}->write("-Data" => "1", "-Length" => 1);
+      $$conn{"status"} = 1;
+    }
+  elsif ($$conn{"status"} == 1)
+    {
+      my @data = $$conn{"socket"}->read("-Length" => 3);
+      my $line = $data[1];
+
+      if ($data[0] == 0)
+        {
+          splice(@connections, $conn_num, 1);
+          print_debug("Server", "Connection error, shutting down...\n");
+          print_to_window($textwin, "Connection error, shutting down...\n", 
+                          $text_status, 1);
+          return;
+        }
+
+      if ($line ne "GET")
+        {
+          @data = $$conn{"socket"}->read("-Length" => 1);
+          $line .= $data[1];
+        }
+
+      print_debug("Server", "Got $line...\n");
+
+      $$conn{"status"} = 2 if ($line eq "GET");
+      $$conn{"status"} = 3 if ($line eq "SEND");
+    }
+  elsif ($$conn{"status"} == 2)
+    {
+      my @data = $$conn{"socket"}->read();
+      $data[1] =~ /(.+?) "(.+?)" (\d+)/;
+
+      if ($data[0] == 0)
+        {
+          splice(@connections, $conn_num, 1);
+          print_debug("Server", "Connection error, shutting down...\n");
+          print_to_window($textwin, "Connection error, shutting down...\n", 
+                          $text_status, 1);
+          return;
+        }
+
+      my $up;
+      my $username = $1;
+      my $filename = $2;
+      my $pos = $3;
+
+      print_debug("Server", "Upload info from user... user: $1, file: $2, pos: $3\n");
+
+      foreach $up (@uploads)
+        {
+          print_debug("UL", "$$up{user}, $$up{sentname}\n");
+
+          if (($$up{"user"} =~ /\Q$username\E/i) &&
+              ($$up{"sentname"} eq $filename))
+            {
+              my @stat_info = stat "$upload/$$up{filename}";
+
+              print_debug("Server", "Creating new upload of $$up{filename} ($stat_info[7])...\n");
+              print_to_window($textwin, "New upload of $$up{filename} to $$up{user} started...\n", $text_state, 1);
+
+              $$up{"status"} = 0;
+              $$up{"pos"} = $pos;
+              $$up{"socket"} = $$conn{"socket"};
+              $$up{"file"} = new FileHandle("$upload/$$up{filename}");
+              $$up{"size"} = $stat_info[7];
+
+              splice(@connections, $conn_num, 1);
+            }
+        }
+    }
+  elsif ($$conn{"status"} == 3)
+    {
+      my $line = $$conn{"socket"} ->read();
+      my $found = $FALSE;
+
+      print_debug("Server", "Got an upload message: $line\n");
+
+      $line =~ /(.+?) "(.+?)" (\d+)/;
+
+      my $user = $1; $filename = $2; $size = $3;
+
+      foreach $dl (@downloads)
+        {
+          if (($$conn{"ip"} eq $$dl{"ip"}) &&
+              ($filename eq $$dl{"sentname"}) &&
+              ($user eq $$dl{"user"}) &&
+              ($size eq $$dl{"size"}))
+            {
+              $found = $TRUE;
+
+              $$dl{"socket"} = $$conn{"socket"};
+              print_debug("Server", "Upload established\n");
+              
+              splice(@connections, $conn_num, 1);
+
+              $$dl{"socket"}->write("-Data" => "$$dl{pos}", "-Length" => length($$dl{"pos"}));
+              $$dl{"status"} = 2;
+            }
+        }
+
+      print_debug("Server", "Couldn't find matching download!\n") if (! $found);
+    }
+}
+
+sub check_keyboard
+{
+  my ($sock, $textwin, $text_state, $cmdwin, $line_state) = @_;
+  my $ch;
+
+  if (($ch = getch()) != ERR)
+    {
+      getline($cmdwin, $ch, $line_state);
+      return if ($$line_state{"status"} == $FALSE);
+
+      do_command($sock, $textwin, $text_state, $cmdwin, $line_state);
+    }
+}
+
+sub check_napster
+{
+  my ($sock, $textwin, $text_state, $cmdwin, $line_state, $nap_buffer, $total) = @_;
+  my @data;
+  my $length;
+  my $read_len;
+
+  if ($$total < 4)
+    {
+      @data = $sock->read("-Length" => 4 - $$total);
+
+      $$nap_buffer .= $data[1];
+      $$total += $data[0];
+
+      if ($$total < 4) { return; }
+    }
+
+  my $cmd_length = unpack("v", substr($$nap_buffer, 0, 2));
+  my $actual_string;
+  my $cmd;
+
+  if (($cmd_length > 0) && ($$total - 4 < $cmd_length))
+    {
+      @data = $sock->read("-Length" => $cmd_length - ($$total - 4));
+
+      $$nap_buffer .= $data[1];
+      $$total += $data[0];
+    }
+
+  return if ($$total - 4 < $cmd_length);
+
+  $cmd = unpack("v", substr($$nap_buffer, 2, 2));
+  $actual_string = substr($$nap_buffer, 4, $cmd_length);
+  $$nap_buffer = substr($$nap_buffer, $cmd_length + 4);
+  $$total -= $cmd_length + 4;
+
+  print_debug("Receive", "len = $cmd_length " .
+                         "remaining = $$total " .
+                         "command = $cmd " .
+                         "string = $actual_string\n");
+
+  my @arr = @{ $code_hash{$cmd} };
+
+  if (@arr ne undef)
+    { 
+      my $func;
+
+      foreach $func (@arr)
+        { 
+          &$func($sock, \$actual_string, $textwin, $text_state, $cmdwin, $line_state); 
+        }
+    }
+  else
+    {
+      print_debug("Receive", "!! Unhandled Command: $cmd\n");
+    }
+}
+
+sub wait_for_input
+{
+  my ($sock, $server, $textwin, $text_state, $cmdwin, $line_state, $nap_buffer, $total) = @_;
+
+  my ($dl, $conn, $up);
+  my $s = new IO::Select;
+  my $w = new IO::Select;
+  my %handle_hash;
+  my (@ready, $handle);
+  my $ut;
+
+  $handle_hash{$sock->socket()} = "NAP";
+  $handle_hash{$server} = "SERVER" if ($serverport);
+  $handle_hash{\*STDIN} = "KEY";
+
+  $s->add($napster_sock->socket());
+  $s->add(\*STDIN) if (! $daemon);
+  $s->add($server) if ($serverport);
+
+  foreach $dl (@downloads)
+    {
+      if ($$dl{"socket"} ne undef)
+        {
+          $handle_hash{$$dl{"socket"}->socket()} = "DL";      
+          $s->add($$dl{"socket"}->socket());
+        }
+      elsif ($$dl{"read"} ne undef)
+        {
+          $handle_hash{$$dl{"read"}} = "TRANS";
+          $s->add($$dl{"read"});          
+        }
+    }  
+
+  foreach $up (@uploads)
+    {
+      if ($$up{"socket"} ne undef)
+        {
+          $handle_hash{$$up{"socket"}->socket()} = "UL";
+          $s->add($$up{"socket"}->socket());
+          $w->add($$up{"socket"}->socket());
+        }
+      elsif ($$up{"read"} ne undef)
+        {
+          $handle_hash{$$up{"read"}} = "TRANS";
+          $s->add($$up{"read"});
+        }
+    }
+
+  foreach $conn (@connections)
+    {
+      $handle_hash{$$conn{"socket"}->socket()} = "CONN";
+      $s->add($$conn{"socket"}->socket());
+    }
+
+  @ready = IO::Select->select($s, $w, undef, $POLL_DELAY);  
+
+# Any better way to do this?  It works, but... yuck... :)
+
+  foreach $handle (@{ $ready[0] })
+    {
+      if ($handle_hash{$handle} eq "NAP")
+        {
+          check_napster($sock, $textwin, $text_state, $cmdwin, $line_state, $nap_buffer, $total);
+        }
+      elsif ($handle_hash{$handle} eq "KEY")
+        {
+          check_keyboard($sock, $textwin, $text_state, $cmdwin, $line_state);
+        }
+      elsif ($handle_hash{$handle} eq "DL")
+        {
+          download_rcv($sock, $handle, $textwin, $text_state, $cmdwin, $line_state);
+        }
+      elsif ($handle_hash{$handle} eq "TRANS")
+        {
+          transfer_cmd($sock, $handle, $textwin, $text_state, $cmdwin, $line_state);
+        }
+      elsif ($handle_hash{$handle} eq "UL")
+        {
+          upload_send($sock, $handle, $textwin, $text_state, $cmdwin, $line_state);
+        }
+      elsif ($handle_hash{$handle} eq "CONN")
+        {
+          handle_server_request($handle, $textwin, $text_state, $cmdwin, $line_state);
+        }
+      elsif ($handle_hash{$handle} eq "SERVER")
+        {
+          my ($socket, $addr) = $server->accept();
+          my ($port, $iaddr) = sockaddr_in($addr);
+          my ($a, $b, $c, $d) = unpack('C4', $iaddr);
+
+          my $new_sock = new NBSocket("-Socket" => $socket,
+                                      "-Blocking" => 0);
+          my $ip = "$a.$b.$c.$d";
+          my %new_conn;
+
+          $new_conn{"socket"} = $new_sock;
+          $new_conn{"ip"} = $ip;
+          $new_conn{"status"} = 0;
+
+          push @connections, \%new_conn;
+
+          handle_server_request($socket, $textwin, $text_state, $cmdwin, $line_state);
+        }
+    }
+
+  foreach $handle (@{ $ready[1] })
+    {
+      if ($handle_hash{$handle} eq "UL")
+        {
+          upload_send($sock, $handle, $textwin, $text_state, $cmdwin, $line_state);
+        }
+    }
+}
+
+sub main_loop
+{
+  my %line_state = ("buffer" => "",
+                    "status" => $FALSE,
+                    "pos" => 0,
+                    "length" => 0,
+                    "history" => (""));
+  my $nap_buffer;
+  my $total = 0;
+  my $func;
+
+  while(1)
+    {
+      wait_for_input($napster_sock, $server_sock, $win[0], \%text_state, $win[1], \%line_state, \$nap_buffer, \$total);
+
+      foreach $func (@poll_funcs) # Check polled functions
+        {
+          &$func($napster_sock, $win[0], \%text_state, $win[1], \%line_state, \$nap_buffer, \$total);
+        }
+
+      if (! $daemon)
+        {
+          noutrefresh($win[0]);
+          noutrefresh($win[1]); doupdate();
+        }
+    }
+}
+
+

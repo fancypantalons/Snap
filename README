@@ -1,0 +1,102 @@
+Snap v0.02a
+A Perl Napster Client
+---------------------
+
+http://ugweb.cs.ualberta.ca/~kosinski/snap
+email: brettk@ualberta.ca
+
+Snap is an open source, Perl, text-based Napster client written using
+the ncurses library for screen control.  It's main goal is to remain
+relatively slim while providing all the functionality demanded of a
+full-fledged Napster client.  It has been tested on the following
+platforms, although I'm sure many more will work without difficulty:
+
+* Redhat Linux 5.2 (i686)
+* RedHat Linux 6.0 (i686)
+* OpenBSD 2.5
+
+All platforms use Perl 5, which is required (at least AFAIK) for Snap
+to run.
+
+Snap currently requires the following Perl modules to run:
+
+* Time::HiRes - For download/upload throttling.
+* Curses      - For screen control.
+* MD5         - For calculating MP3 MD5 signatures.
+
+Note:  It is quite possible to install these modules into a user home
+directory, allowing users to run Snap without needing admin access.
+See the section on Snap and Perl Modules for more information.
+
+Currently, Snap supports a wide range of features, including:
+
+* Full song searching and library browsing support. 
+* Regular expression filtering of search/browse results.
+* Multiple simultaneous upload and download support including upload speed
+  throttling.
+* Resume support (mostly... :)
+* Chatting support, including multi-channel support.
+* Support of all admin commands, including Opennap extensions.
+* Hotlist support.
+* Support for most other Napster commands, including ping, whois,
+  etc.
+* Support for alternate metaservers and Napster servers, for use 
+  with Opennap.
+* Highly scriptable, including a builtin /eval function for evaluating
+  Perl code on the fly.
+* Builtin help facilities for all commands.
+
+Of course, this is an early release, so much of the code is rough, but
+it's getting there. :)
+
+Installing Snap
+---------------
+
+Well, first, you need to install the Time::HiRes, Curses, and MD5 modules.  
+I would take a look at CPAN for these.  Once you've done this, you'll have
+to modify the first line of the snap file to point to your Perl binary,
+and change the -I flag to point to your snap directory. You'll want to
+change the directory to be a full path name if you want to run snap from a
+directory other than it's home directory.
+
+After all this is done, copy the snaprc file to ~/.snaprc.
+
+As well, if you wish to install Snap in a system-wide directory, try doing
+the following:
+
+Create /usr/local/share/snap
+Copy the MPEG directory and nbsocket.pm to /usr/local/share/snap
+Edit the first line of snap:
+
+  #!/usr/bin/perl -I./
+
+to
+
+  #!/usr/bin/perl -I/usr/local/share/snap
+
+That should do it! If you have any troubles, make sure the permissions
+on all the files/directories are correct (755 for snap and MPEG, 644 for 
+nbsocket and the contents of the MPEG directory). :)
+
+Snap and Perl Modules
+---------------------
+If you don't have admin access to your system, it may be necessary to
+install the required Perl modules to run snap in your home directory.
+In order to do this, you'll need to get the packages from CPAN.  Then,
+copy the following files into the Snap distribution directory:
+
+Curses.pm -> snapdir/
+MD5.pm -> snapdir/
+Time/HiRes.pm -> snapdir/Time/
+Curses.bs,Curses.so -> snapdir/auto/Curses/
+MD5.bs,MD5.so,autosplit.ix -> snapdir/auto/MD5/
+HiRes.bs,HiRes.so -> snapdir/auto/Time/HiRes/
+
+This should be all that is necessary to install Snap into a home 
+directory.
+
+License Information
+-------------------
+
+Snap is placed under the Artistic License.  Please see the LICENSE
+document for specific terms and conditions.

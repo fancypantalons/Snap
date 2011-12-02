@@ -1,0 +1,22 @@
+#
+# Snap RC file.  This is straight-up Perl, so you can do pretty much
+# anything in here, from adding new commands to redefining variables
+# and functions, to anything else you want.  
+#
+
+$username = "user";
+$password = "password";
+
+$serverport = 6699;
+$speed = 7;                    # Speed corresponds to those with nap
+$email = "anon\@napster.com";
+$download = "$ENV{HOME}/snap/download";
+$upload = "$ENV{HOME}/snap/upload";
+$cachefile = "$ENV{HOME}/snap/cache.dat";
+
+# $hotlist = "hotlist.txt"
+# $daemon = 1;
+
+# You can evaluate Perl scripts on startup by using eval_file().
+
+# eval_file("examples/monitor.pl");

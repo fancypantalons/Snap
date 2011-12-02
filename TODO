@@ -4,3 +4,7 @@
 * Add support for 609 and other Napster commands
 * Re-visit chatting code and clean it up
 * Write up script documentation
+* Expand queue code to allow multiple queues.
+* Add /dl -restart
+* Modify download/upload code to store the data from the search results
+  in the download/upload entry.

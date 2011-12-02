@@ -51,9 +51,15 @@ push @SCRIPT_PATH, "$SNAP_HOME/scripts";
 $username = 'username';
 $password = 'password';
 $email = 'anon@napster.com';
-$speed = 7;                   
+$speed = 7;
 
 $serverport = 6699;    # If you are behind a firewall, set this to 0.
+
+# $socks = 1;          # Enable usage of SOCKS.
+# $socks_server = "proxy.server.com:8080"
+# $socks_user = "socks_username"
+# $socks_pass = "socks_password"
+# $socks_version = 5
 
 $download = "$SNAP_HOME/download";
 $upload = "$SNAP_HOME/upload";

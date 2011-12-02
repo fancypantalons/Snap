@@ -371,7 +371,7 @@ sub setup_gui
 
 
   push @{ $code_hash{&MSG_SEARCH_ACK} }, sub { display_search_result(@_, $clist) };
-  push @{ $code_hash{&MSG_BROWSE_ACK} }, sub { display_browse_result(@_, $clist) };
+  push @{ $code_hash{&MSG_BROWSE_ACK} }, sub { display_search_result(@_, $clist) };
   
   $GUI{"search_table"} = $table;
   $GUI{"artist_input"} = $artist;
@@ -619,63 +619,30 @@ sub display_search_result
   my $row_num;
   my %song, $filename, $megs;
 
-  $$text =~ /"(.+?)" (.+?) (\d+?) (\d+?) (\d+?) (\d+?) (.+?) (\d+?) (\d)/;
+  $list->freeze();
+  $list->clear();
 
-  $song{"name"} = $1;
-  $song{"id"} = $2;
-  $song{"size"} = $3;
-  $song{"bitrate"} = $4;
-  $song{"frequency"} = $5;      
-  $song{"number"} = $6;
-  $song{"user"} = $7;
-  $song{"ip"} = $8;
-  $song{"speed"} = $9;
-
-  return if ((defined $search_pattern) &&
-	     ($song{"name"} !~ /$search_pattern/));
-
-  if ($song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/)
+  foreach (@search_results)
     {
-      $filename = $2;
+      my %song = %$_;
+      
+      if ($song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/)
+        {
+          $filename = $2;
+        }
+      else
+        { $filename = $song{"name"}; }
+      
+      $megs = sprintf("%.2f", ($song{"size"} / 1000000));
+      
+      my $row = $list->append($filename, $megs . "M", 
+                              $song{"bitrate"}, $song{"user"}, 
+                              $SPEEDS{$song{"speed"}});
+      
+      $list->set_row_data($row, \$row);
     }
-  else
-    { $filename = $song{"name"}; }
 
-  $megs = sprintf("%.2f", ($song{"size"} / 1000000));
-
-  my $row = $list->append($filename, $megs . "M", 
-			  $song{"bitrate"}, $song{"user"}, 
-			  $SPEEDS{$song{"speed"}});
-
-  $list->set_row_data($row, \$row);
-}
-
-sub display_browse_result
-{
-  my ($sock, $text, $list) = @_; 
-  my $row_num;
-  my %song, $filename, $megs;
-
-  $$text =~ /(.+) \"(.*)\" (.+?) (\d+?) (\d+?) (\d+?) (\d+?)/;
-  $song{"user"} = $1;
-  $song{"name"} = $2;
-  $song{"id"} = $3;
-  $song{"size"} = $4;
-  $song{"bitrate"} = $5;
-  $song{"frequency"} = $6;      
-  $song{"number"} = $7;
-  $song{"speed"} = 0;
-
-  $song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
-  $filename = $2;
-
-  $megs = sprintf("%.2f", ($song{"size"} / 1000000));
-
-  my $row = $list->append($filename, $megs . "M", 
-			  $song{"bitrate"}, $song{"user"}, 
-			  $SPEEDS{$song{"speed"}});
-
-  $list->set_row_data($row, \$row);
+  $list->thaw();
 }
 
 sub sort

@@ -68,33 +68,23 @@ sub insert
 {
   my $self = shift;
   my $line = shift;
-  my ($colour, $nextcolour) = ($self->{"last_colour"}, 0);
-  my $text;
+  my $colour = $self->{"last_colour"};
   my $textbox = $self->{"text"}; 
 
-  while ($line =~ /~(\d{1,2}|c);/)
+  while ($line =~ /(.*?)~(\d{1,2}|c);/gc)
     {
-      $nextcolour = $1;
-      $text = $line;
-      
-      $line =~ s/^.*?~\Q$nextcolour\E;//;
-      $text =~ s/~\Q$nextcolour;$line\E$//;
+      my $text = $1;
+      my $nextcolour = $2;
 
-      if ($nextcolour eq "c") { $nextcolour = 1; }
-
-      # $colour
+      $nextcolour = 1 if ($nextcolour eq "c");
+      $nextcolour = 15 if ($nextcolour > 15);      
       
       $textbox->insert("end", $text, [ "colour_$colour" ]);
      
       $colour = $nextcolour;
-      
-      if ($colour > 15) { $colour = 15; }
     } 
 
-  # $colour
-
-  $textbox->insert("end", $line, [ "colour_$colour" ]);
-
+  $textbox->insert("end", substr($line, pos($line)), [ "colour_$colour" ]);
   $textbox->see("end");
 
   $self->{"last_colour"} = $colour;

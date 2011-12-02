@@ -4,7 +4,11 @@
 
 if (! defined $ENCODER_LOADED) { eval_file("encode.pl"); }
 
+my $VERSION = "0.01";
+
 set_encoder(\&pig_latinize);
+
+print "Pig Latin Encoder $VERSION loaded...\n";
 
 sub pig_latinize
 {

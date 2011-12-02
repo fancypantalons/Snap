@@ -65,6 +65,18 @@ BEGIN
 	print "HiRes timer support not found... UL throttling disabled.\n";
 	undef %Time::HiRes::;
       }
+
+    eval { require Net::SOCKS; import Net::SOCKS };
+
+    if ($@)
+      {
+        print "SOCKS support not found... disabling SOCKS.\n";
+        $SOCKS_LOADED = 0;
+      }
+    else
+      {
+        $SOCKS_LOADED = 1;
+      }
   }
 
 #
@@ -83,7 +95,12 @@ use MPEG::MP3Info;
 #############################################################################
 
 $SIG{INT} = sub { die_handler("SIGINT") };
-$SIG{PIPE} = sub { die_handler("SIGPIPE: $!") };
+$SIG{PIPE} = sub {       
+                   my @call_info = caller;
+                   my $info = "$call_info[1] line $call_info[2]";
+                   die_handler("SIGPIPE: $! at $info") 
+                 };
+
 $SIG{CHLD} = \&reaper;
 
 $SIG{__DIE__} = \&die_handler;
@@ -108,11 +125,9 @@ my @SCRIPT_PATH = ("$FindBin::Bin/scripts",
 
 my %command_hash = ("/quit" => [\&do_quit],
                     "/search" => [\&do_clear_results, \&do_search],
-                    "/filter" => [\&do_filter],
+                    "/results" => [\&do_results],
                     "/get" => [\&do_send_download_request],
                     "/resume" => [\&do_resume],
-                    "/dlist" => [\&do_download_list],
-                    "/ulist" => [\&do_upload_list],
                     "/dl" => [\&do_download_op],
                     "/ul" => [\&do_upload_op],
                     "/eval" => [\&do_eval],
@@ -141,18 +156,16 @@ my %command_hash = ("/quit" => [\&do_quit],
 my %help_hash = ("About" => \&do_about,
                  "/quit" => "Usage: /quit\n\n  Terminates the program.\n\n",
                  "/search" => \&do_search_help,
-                 "/filter" => \&do_filter_help,
+                 "/results" => \&do_results_help,
                  "/get" => \&do_get_help,
                  "/resume" => "Usage: /resume <num>\n\n  Resumes download file number <num> from search results.\n\n",
-                 "/dlist" => "Usage: /dlist\n\n  Gets status of current downloads.\n\n",
-                 "/ulist" => "Usage: /ulist\n\n  Gets status of current uploads.\n\n",
                  "/dl" => \&do_dl_help,
                  "/ul" => \&do_ul_help,
                  "/eval" => "Usage: /eval <expr> | -file <file>\n\n" .
                             "  Evaluates Perl expression or file.\n\n",
                  "/reconnect" => "Usage: /reconnect [host:port]\n\n  Connect to new server.\n\n",
                  "/list" => "Usage: /list\n\n  Lists channels on server.\n\n",
-                 "/browse" => "Usage: /browse <user>\n\n  Browses files offered by <user>.\n\n",
+                 "/browse" => \&do_browse_help,
                  "/join" => "Usage: /join <chan>\n\n  Join channel <chan>\n\n",
                  "/part" => "Usage: /part [chan]\n\n  Part channel or current channel if none specified.\n\n",
                  "/send" => "Usage: /send <msg>\n\n  Send a message to the current channel.\n\n",
@@ -237,7 +250,8 @@ my %code_hash = (&MSG_ERR => [\&print_text],
 
                  &MSG_SHUTDOWN => [ \&shutdown_prog ],
 
-                 &MSG_INIT => [\&update_cache, 
+                 &MSG_INIT => [\&update_cache,
+                               \&setup_socks,
                                \&setup_server, 
                                \&setup_new_connection,
 			       \&login_to_napster]
@@ -245,8 +259,9 @@ my %code_hash = (&MSG_ERR => [\&print_text],
 
 ###########################################################################
 
-my (@search_results, @downloads, @uploads, @channels, @connections, @hotlist,
-    @banlist, @download_queue, %handles, @extensions, %handler_trace);
+my (@search_results, $search_sort_fields, @downloads, @uploads, @channels, 
+    @connections, @hotlist, @banlist, @download_queue, %handles, @extensions, 
+    %handler_trace);
 
 my $active_channel;
 my %user_lists;
@@ -270,7 +285,13 @@ my $colours = 1;
 my ($ul_speed, $ul_limit) = (-1, -1);
 my @host;
 
+my $socks_server = undef;
+my ($socks_user, $socks_pass, $socks_version) = ("", "", 5);
+my $socks = 0;
+my $socks_ref;
+
 Getopt::Long::config("pass_through");
+Getopt::Long::config("no_ignore_case");
 
 {
   my $snapname;
@@ -345,7 +366,7 @@ Getopt::Long::config("pass_through");
 
 if (! -e $RC_FILE)
   { 
-    print "Error, unable to load RC file!  This could cause login errors...\n";
+    print "Error, unable to load RC file!  This could cause login errors.\n";
     print "Loading plain text interface by default...\n";
 
     eval_file('Plain.pl');
@@ -375,22 +396,38 @@ Getopt::Long::config("no_pass_through");
                 "p" => \$password,
                 "o" => \$serverport,
                 "h" => \$help,
-		"b" => \$bw);
+		"b" => \$bw,
+
+                "S" => \$socks_server,
+                "U" => \$socks_user,
+                "P" => \$socks_pass,
+                "v" => \$socks_version);
 
   if (!GetOptions(\%optctl, "s=s", "m=s", "r=f", "n!", "l=s", "i=s",
-                  "u=s", "p=s", "o=i", "h!", "b!"))
+                  "u=s", "p=s", "o=i", "h!", "b!", "S=s", "U=s", "P=s",
+                  "v=i"))
     {
       do_cmdline_help();
       exit(0);
     }
 
-  $serverstr =~ /(.*):(.*)/;  
-  $host[0] = $1; $host[1] = $2;
-
   if (defined $help)
     {
       do_cmdline_help();
       exit(0);
+    }
+
+  if ($serverstr ne undef)
+    {
+      if ($serverstr =~ /(.*):(.*)/)
+        { 
+          $host[0] = $1; $host[1] = $2; 
+        }
+      else
+        {
+          print "Invalid server specification: $serverstr\n";
+          exit(0);
+        }
     }
 
   if (defined $mserver)
@@ -401,8 +438,8 @@ Getopt::Long::config("no_pass_through");
         }
       else
         { 
-          $metaserver = $mserver;
-          $metaport = 8875;
+          print "Invalid metaserver specification: $mserver\n";
+          exit(0);
         }
     }
 
@@ -415,6 +452,10 @@ Getopt::Long::config("no_pass_through");
   if (defined $log) { $logname = $log; }
   if (defined $daemon_mode) { $daemon = $daemon_mode; }
   if (defined $bw) { $colours = 0; }
+  if (defined $socks_server)
+    {
+      $socks = 1;
+    }
 }
 
 STDOUT->autoflush(1);              # Set screen to autoflush.
@@ -518,6 +559,27 @@ sub eval_file
 
 ######################### Napster Initialization #######################
 
+sub setup_socks
+{
+  if ($socks && $SOCKS_LOADED)
+    {
+      my ($socks_addr, $socks_port) = split(/:/, $socks_server);
+
+      $socks_ref = new Net::SOCKS(socks_addr => $socks_addr,
+                                  socks_port => $socks_port,
+                                  user_id => $socks_user,
+                                  user_password => $socks_pass,
+                                  protocol_version => $socks_version);
+
+      $serverport = 0;
+    }
+  else
+    {
+      $socks = 0;
+      $socks_ref = undef;
+    }
+}
+
 sub setup_new_connection
 {
   if (defined $napster_sock)
@@ -527,7 +589,8 @@ sub setup_new_connection
     } 
 
   $napster_sock = SnapLib::NapSocket->new($metaserver, $metaport,
-				       $host[0], $host[1], $REDIAL_DELAY);
+				       $host[0], $host[1], $REDIAL_DELAY, 
+                                       $socks_ref);
 
   $handles{$napster_sock} = { Handle => $napster_sock,
 			      Callback => \&check_napster };
@@ -842,27 +905,59 @@ sub do_cmdline_help
   print '
 Command-line params:
 
--h           Display this help page.
--m ip:port   Specify a metaserver to retrieve server ip/port from.
--s ip:port   Specify specific server to connect to.  
--r float     Specifies the redial delay in seconds.  Can take fractional
-             values (ie 0.1 == 1 tenth of a second). Default: 60s.
--u name      Specify user name.
--p password  Specify password.
--o port      Specify local port number
--i rcfile    Specify alternate rc file to load.
--n           Register as new user.
--d           Run in server mode (no interface).
--b           Disable colours (b/w mode).
--e string    Evaluate <string> as a Perl program during startup.
--f file      Executes <file> as a Perl program within Snap.
+-h             Display this help page.
+-m ip:port     Specify a metaserver to retrieve server ip/port from.
+-s ip:port     Specify specific server to connect to.  
+-r float       Specifies the redial delay in seconds.  Can take fractional
+               values (ie 0.1 == 1 tenth of a second). Default: 60s.
+-u name        Specify user name.
+-p password    Specify password.
+-o port        Specify local port number
+-i rcfile      Specify alternate rc file to load.
+-n             Register as new user.
+-d             Run in server mode (no interface).
+-b             Disable colours (b/w mode).
+-e string      Evaluate <string> as a Perl program during startup.
+-f file        Evaluate <file> as a Perl program within Snap.
 
--l logfile   Specify a logfile name for debug output.
--t cb_type   Enable debug tracing for specified callback type.
--c           Print available callback types.
--w log_cat   Debug catagory to log.  Default: all.
-
+-l logfile     Specify a logfile name for debug output.
+-t cb_type     Enable debug tracing for specified callback type.
+-c             Print available callback types.
+-w log_cat     Debug catagory to log.  Default: all.
 ';
+
+if ($SOCKS_LOADED)
+  {
+    print '
+-S ip:port     Enable SOCKS with the specified server.
+-U name        Specify the SOCKS user name.
+-P password    Specify the SOCKS password.
+-v version     Specify the SOCKS protocol version (4 or 5). Default: 5.
+';
+  }
+
+print "\n";
+}
+
+sub perform_call
+{
+  my $handler = shift;
+
+  if (ref($handler) eq "ARRAY")
+    {
+      foreach (@$handler) 
+        { 
+          perform_call($_, @_);
+        }
+    }
+  elsif (ref($handler) eq "CODE")
+    {
+      &$handler(@_);
+    }
+  elsif (! ref($handler))
+    {
+      do_command($napster_sock, $handler);
+    }  
 }
 
 sub call_handler
@@ -889,22 +984,7 @@ sub call_handler
       return undef;    
     }
 
-  if (ref($code_hash{$cmd}) eq "ARRAY")
-    {
-      my @arr = @{ $code_hash{$cmd} };
-      my $func;
-      
-      foreach $func (@arr) 
-        { 
-	  &$func(@_);
-        }
-    }
-  elsif (ref($code_hash{$cmd}) eq "CODE")
-    {
-      my $func = $code_hash{$cmd};
-
-      &$func(@_);
-    }
+  perform_call($code_hash{$cmd}, @_);
 
   return 1;
 }
@@ -1027,7 +1107,34 @@ sub get_search_result
   if ((! defined $search_pattern) ||
       ($song{"name"} =~ /$search_pattern/))
     {
-      push @search_results, \%song;      
+      if ($search_sort_fields ne "")
+        {
+          my $i;
+          my $point = $#search_results + 1;
+
+          # I know, I know, this should be written as a binary search + insert,
+          # but this works well enough... :)
+          
+          for ($i = 0; $i <= $#search_results; $i++)
+            {
+              my $current = do_results_sort($search_results[$i], \%song, $search_sort_fields);
+              
+              if ($current > 0)
+                {
+                  $point = $i;
+                  
+                  last;
+                }
+            }
+          
+          @search_results = (@search_results[0 .. $point - 1], 
+                             \%song, 
+                             @search_results[$point .. $#search_results]);
+        }
+      else
+        {
+          push @search_results, \%song;
+        }
     }
 }
 
@@ -1046,7 +1153,35 @@ sub get_browse_result
   $song{"number"} = $7;
   $song{"speed"} = 0;
 
-  push @search_results, \%song;
+  if ((! defined $search_pattern) ||
+      ($song{"name"} =~ /$search_pattern/))
+    {
+      if ($search_sort_fields ne "")
+        {
+          my $i;
+          my $point = $#search_results + 1;
+          
+          for ($i = 0; $i <= $#search_results; $i++)
+            {
+              my $current = do_results_sort($search_results[$i], \%song, $search_sort_fields);
+              
+              if ($current > 0)
+                {
+                  $point = $i;
+                  
+                  last;
+                }
+            }
+          
+          @search_results = (@search_results[0 .. $point - 1], 
+                             \%song, 
+                             @search_results[$point .. $#search_results]);
+        }
+      else
+        {
+          push @search_results, \%song;
+        }
+    }
 }
 
 sub print_search_results
@@ -1213,25 +1348,51 @@ sub setup_download
   else
     {
       my $proto = getprotobyname("tcp");
+      my $new_sock;
+
+      if (! $socks)
+        {
+          $new_sock = IO::Socket::INET->new();
+
+          if ($new_sock->socket(PF_INET, SOCK_STREAM, $proto))
+            {
+              fcntl($new_sock, F_SETFL, O_NONBLOCK);
+              $new_sock->connect($uport, inet_aton($ip));
+              fcntl($new_sock, F_SETFL, 0);
+            }
+          else
+            {
+              $new_sock = undef;
+            }
+        }
+      else
+        {
+          $new_sock = $socks_ref->connect(peer_addr => $ip,
+                                          peer_port => $uport);
+        }
+
+      if (! defined $new_sock)
+        {
+          print "Error opening download socket to $ip:$uport!\n";
+
+          if (defined $socks)
+            {
+              print "Socks: ", 
+              Net::SOCKS::status_message($socks_ref->param('status_num')),
+              "\n";
+            }
+
+          pop @downloads;
+          
+          call_handler(MSG_DL_ERR, $sock, $dl);
+          return;
+        }
+
+      $handles{$new_sock} = { Handle => $new_sock,
+                              Callback => \&download_handshake };
 
       $$dl{"status"} = 0;
-      $$dl{"socket"} = IO::Socket::INET->new();
-
-      if (! $$dl{"socket"}->socket(PF_INET, SOCK_STREAM, $proto))
-        {
-	  print "Error opening download socket to $ip:$uport!\n";
-	  pop @downloads;
-
-	  call_handler(MSG_DL_ERR, $sock, $dl);
-	  return;
-	}
-
-      fcntl($$dl{"socket"}, F_SETFL, O_NONBLOCK);
-      $$dl{"socket"}->connect($uport, inet_aton($ip));
-      fcntl($$dl{"socket"}, F_SETFL, 0);
-
-      $handles{$$dl{"socket"}} = { Handle => $$dl{"socket"},
-				   Callback => \&download_handshake };
+      $$dl{"socket"} = $new_sock;
 
       call_handler(MSG_DL_INIT, $sock, $dl);
     }
@@ -1414,29 +1575,54 @@ sub start_alt_upload
     }  
 
   my $proto = getprotobyname("tcp");
+  my $new_sock;
 
-  $$upload{"socket"} = IO::Socket::INET->new();
+  if (! $socks)
+    {
+      $new_sock = IO::Socket::INET->new();
+      
+      if ($new_sock->socket(PF_INET, SOCK_STREAM, $proto))
+        {     
+          fcntl($new_sock, F_SETFL, O_NONBLOCK);
+          $new_sock->connect($port, inet_aton($ip));
+          fcntl($new_sock, F_SETFL, 0);
+        } 
+      else
+        {
+          $new_sock = undef;
+        }
+    }
+  else
+    {
+      $new_sock = $socks_ref->connect(peer_addr => $ip,
+                                      peer_port => $port);
+    }
 
-  if (! $$upload{"socket"}->socket(PF_INET, SOCK_STREAM, $proto))
+  if (! defined $new_sock)
     {
       print "Error, couldn't create upload socket to $ip:$port!\n";      
 
+      if (defined $socks)
+        {
+          print "Socks: ", 
+          Net::SOCKS::status_message($socks_ref->param('status_num')),
+          "\n";
+        }      
+
       @uploads = grep { $_ ne $upload } @uploads;
-
+      
       call_handler(MSG_UL_ERR, $sock, $upload);
-
+      
       return;
     }
-
-  fcntl($$upload{"socket"}, F_SETFL, O_NONBLOCK);
-  $$upload{"socket"}->connect($port, inet_aton($ip));
-  fcntl($$upload{"socket"}, F_SETFL, 0);
 
   debug_print("UL", "New ALT UL to $user ($ip:$port), $filename.\n");
   print "New ALT Upload to $user for $filename...\n";
 
-  $handles{$$upload{"socket"}} = { Handle => $$upload{"socket"},
-				   Callback => \&upload_handshake };
+  $handles{$new_sock} = { Handle => $new_sock,
+                          Callback => \&upload_handshake };
+
+  $$upload{"socket"} = $new_sock;
 }
 
 sub join_channel
@@ -1899,7 +2085,8 @@ sub do_search
               "freq" => 1,
               "regex" => 1,
               "type" => 1,
-              "encode" => 0);
+              "encode" => 0,
+              "sort" => 1);
 
   return if ($#params < 0);
   my $results = getopts(\%opts, \@params);
@@ -1914,6 +2101,7 @@ sub do_search
   my $type = shift @{ $results->{"type"} };
 
   $search_pattern = shift @{ $results->{"regex"} };
+  $search_sort_fields = shift @{ $results->{"sort"} };
 
   if ($ENCODER_LOADED)
     {
@@ -1929,7 +2117,7 @@ sub do_search
   my @freq_params = get_search_type($freq);
 
   $textstr = "FILENAME CONTAINS \"$artist\" " if (defined $artist);
-  if (defined $max) { $textstr .= "MAX_RESULTS $max "; }
+  if (defined $count) { $textstr .= "MAX_RESULTS $count "; }
   else { $textstr .= "MAX_RESULTS 100 "; }
   $textstr .= "FILENAME CONTAINS \"$file\" " if (defined $file);
   $textstr .= "LINESPEED \"$speed_params[1]\" $speed_params[0] " if (defined $speed);
@@ -1959,42 +2147,129 @@ sub do_search_help
   &$print("    -SPEED <num><mod>   - User connection speed equals <num>.\n");
   &$print("    -COUNT <num>        - Limit count to <num> (max 100).\n");
   &$print("    -REGEX \"<pattern>\"  - Filter search results according to <pattern>.\n");
+  &$print("    -SORT <sort_fields> - Sort results on specified fields.\n");
   &$print("    -TYPE <mime>        - File type specification.  (OpenNap only)\n");
   &$print("    -ENCODE             - Encode search request (based on encode script).\n\n");
   &$print("    Where <mod> is a modifier:\n\n");
   &$print("      <none> - EQUAL TO search.\n");
   &$print("      +      - AT LEAST search.\n");
   &$print("      -      - AT BEST search.\n\n");
+  &$print("    And sort fields are one or more of (case-insensitive):\n\n");
+  &$print("      N      - File name\n");
+  &$print("      U      - User name\n");
+  &$print("      S      - Connection speed\n");
+  &$print("      B      - File bitrate\n");
+  &$print("      F      - File frequency\n\n");
+  &$print("    Note, the sort field order IS significant.\n\n");
 
   return $text;
 }
 
-sub do_filter
+sub get_filter_compare
+{
+  my $str = shift;
+  my $expr;
+
+  return if (! defined $str);
+
+  $str =~ /(\w+)(.*)/;
+  
+  if ($2 eq "+")
+    { $expr = ">= $1" }
+  elsif ($2 eq "-")
+    { $expr = "<= $1" }
+  else
+    { $expr = "== $1" }
+
+  return $expr;
+}
+
+sub do_results_sort
+{
+  my ($a, $b, $fields) = @_;
+  my @sort_fields = split(//, $fields);
+
+  return -1 if ((! defined $fields) || ($#sort_fields < 0));
+
+  foreach (@sort_fields)
+    {
+      if ($_ =~ /^n$/i)
+        {
+          my ($na, $nb);
+
+          $$a{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+          $na = $2;
+
+          $$b{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+          $nb = $2;
+
+          return -1 if ($na lt $nb);
+          return 1 if ($na gt $nb);
+        }
+      elsif ($_ =~ /^s$/i)
+        {
+          return -1 if ($$a{"speed"} < $$b{"speed"});
+          return 1 if ($$a{"speed"} > $$b{"speed"});
+        }
+      elsif ($_ =~ /^b$/i)
+        {
+          return -1 if ($$a{"bitrate"} < $$b{"bitrate"});
+          return 1 if ($$a{"bitrate"} > $$b{"bitrate"});
+        }
+      elsif ($_ =~ /^f$/i)
+        {
+          return -1 if ($$a{"frequency"} < $$b{"frequency"});
+          return 1 if ($$a{"frequency"} > $$b{"frequency"});
+        }
+      elsif ($_ =~ /^u$/i)
+        {
+          return -1 if ($$a{"user"} lt $$b{"user"});
+          return 1 if ($$a{"user"} gt $$b{"user"});
+        }
+      else
+        { 
+          return -1; 
+        }
+    }
+
+  return 0;
+}
+
+sub do_results
 {
   my ($sock, $param_str, @params) = @_;
   my ($textstr, $msg, $len);
   my $ok;
 
-  my ($file, $speed, $bitrate, $freq, $user);
-  my %opts = ("file" => 1,
+  my ($file, $user, $sort_fields);
+  my ($speed_cmp, $bitrate_cmp, $freq_cmp);
+
+  my %opts = ("name" => 1,
               "speed" => 1,
               "bitrate" => 1,
               "freq" => 1,
-              "user" => 1);
+              "user" => 1,
+              "sort" => 1);
 
-  return if ($#params < 0);
-  my $results = getopts(\%opts, \@params);
-  return if (! defined $results);
+  my $results;
+
+  if ($#params < 0)
+    {
+      $results = getopts(\%opts, \@params);
+      return if (! defined $results);
+    }
 
   $file = shift @{ $results->{"file"} };
-  $speed = shift @{ $results->{"speed"} };
-  $bitrate = shift @{ $results->{"bitrate"} };
-  $freq = shift @{ $results->{"freq"} };
+  $speed_cmp = get_filter_compare(shift @{ $results->{"speed"} });
+  $bitrate_cmp = get_filter_compare(shift @{ $results->{"bitrate"} });
+  $freq_cmp = get_filter_compare(shift @{ $results->{"freq"} });
   $user = shift @{ $results->{"user"} };
+  $sort_fields = shift @{ $results->{"sort"} };
 
   my $i;
   my $title = "Search Results";
-  
+  my @final_results;
+
   $title .= "\n" . "-" x length($title) . "\n";
 
   print $title;
@@ -2002,42 +2277,45 @@ sub do_filter
   for ($i = 0; $i <= $#search_results; $i++)
     {
       my $song = $search_results[$i];
-      my $filename = $2;
 
-      $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
-      $filename = $2;
-
-      if ((($filename =~ /$file/) || (! defined $file)) &&
-          (($$song{"speed"} =~ /$speed/) || (! defined $speed)) &&
-          (($$song{"bitrate"} =~ /$bitrate/) || (! defined $bitrate)) &&
-          (($$song{"frequency"} =~ /$freq/) || (! defined $freq)) &&
+      if ((($$song{"name"} =~ /$file/) || (! defined $file)) &&
+          ((eval "$$song{speed} $speed_cmp") || (! defined $speed)) &&
+          ((eval "$$song{bitrate} $bitrate_cmp") || (! defined $bitrate)) &&
+          ((eval "$$song{frequency} $freq_cmp") || (! defined $freq)) &&
           (($$song{"user"} =~ /$user/) || (! defined $user)))
         {
-          $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
-
-          print "~2; " . ($i + 1) . " " .
-                          "$2 " .
-                          sprintf("%.2f", $$song{"size"}/1000000) . "mb " .
-                          "$$song{bitrate} $$song{frequeny} $$song{user} " .                      
-                          $SPEEDS{$$song{"speed"}} . "~c;\n";
+          push @final_results, $i;
         }
+    }
+
+  foreach (sort { do_results_sort($search_results[$a], $search_results[$b], 
+                                  $sort_fields) } @final_results)
+    {
+      my $song = $search_results[$_];
+
+      $$song{"name"} =~ /(.*\/|.*\\)?(.*\.mp3)/;
+      
+      print "~2;" . ($_ + 1) . ". $2 " ,
+            sprintf("%.2f", $$song{"size"}/1000000) , "mb ",
+            "$$song{bitrate} $$song{frequency} $$song{user} ",
+            $SPEEDS{$$song{"speed"}}, "~c;\n";
     }
 }
 
-sub do_filter_help
+sub do_results_help
 {
   my $text = "";
   my $print = sub { my $i = shift; $text .= "~2;$i~c;"; };
 
-  &$print("Usage: /filter <options>\n\n");
-  &$print("  Filters search/browse results using various user-specified regular\n");
-  &$print("  expressions, printing the matched files to the screen.\n\n");
+  &$print("Usage: /results <options>\n\n");
+  &$print("  Display search/browse results using various user-specified.\n\n");
   &$print("  Options:\n");
-  &$print("    -FILE \"<regex>\"    - File name matches specified pattern.\n");
-  &$print("    -SPEED \"<regex>\"   - Match user connection speed.\n");
-  &$print("    -BITRATE \"<regex>\" - Match the bitrate of the file.\n");
-  &$print("    -FREQ \"<regex>\"    - Match the frequency of the file.\n");
-  &$print("    -USER \"<regex>\"    - Match the name of user offering the file.\n\n");
+  &$print("    -NAME \"<regex>\"    - File name matches specified pattern.\n");
+  &$print("    -SPEED <num><mod>    - Match user connection speed.\n");
+  &$print("    -BITRATE <num><mod>  - Match the bitrate of the file.\n");
+  &$print("    -FREQ <num><mod>     - Match the frequency of the file.\n");
+  &$print("    -USER \"<regex>\"    - Match the name of user offering the file.\n");
+  &$print("    -SORT <fields>       - Sort on provided fields.\n\n");
   &$print("  Options can be combined in any order.\n\n");
 
   return $text;
@@ -2218,7 +2496,8 @@ sub do_upload_op
   my $ok;
 
   my %opts = ("speed" => 2,
-              "kill" => -1);
+              "kill" => -1,
+              "list" => 0);
 
   return if ($#params < 0);
   my $results = getopts(\%opts, \@params);
@@ -2247,6 +2526,11 @@ sub do_upload_op
       my $kill_entry = shift @{ $results->{"kill"} };
       kill_ul($sock, $kill_entry - 1) if (defined $kill_entry);
     }
+
+  if (defined $results->{"list"})
+    {
+      do_upload_list();
+    }
 }
 
 sub do_ul_help
@@ -2256,10 +2540,11 @@ sub do_ul_help
 
   &$print("Usage: /ul <command>\n\n");
   &$print("  Performs an operation on some upload(s).\n");
-  &$print("  Upload numbers correspond to those from the /ulist command.\n\n");
+  &$print("  Upload numbers correspond to those from the /ul -list command.\n\n");
   &$print("  Commands:\n");
   &$print("    -KILL  <ul1> <ul2> ... - Kill the transfers specified\n");
-  &$print("    -SPEED <ul> <rate>     - Set transfer speed for <ul> to <rate> b/s\n\n");
+  &$print("    -SPEED <ul> <rate>     - Set transfer speed for <ul> to <rate> b/s\n");
+  &$print("    -LIST                  - List current uploads in progress\n\n");
 
   return $text;
 }
@@ -2269,7 +2554,8 @@ sub do_download_op
   my ($sock, $param_str, @params) = @_;
   my $ok;
   my %opts = ("kill" => -1,
-	      "info" => -1);
+	      "info" => -1,
+              "list" => 0);
 
   return if ($#params < 0);
   my $results = getopts(\%opts, \@params);
@@ -2294,6 +2580,11 @@ sub do_download_op
           kill_dl($sock, $entry - 1);
         }
     }
+
+  if (defined $results->{"list"})
+    {
+      do_download_list();
+    }
 }
 
 sub do_dl_help
@@ -2303,9 +2594,10 @@ sub do_dl_help
 
   &$print("Usage: /dl <command>\n\n");
   &$print("  Performs some operation on some download(s).\n");
-  &$print("  Download numbers correspond to those from the /dlist command.\n\n");
+  &$print("  Download numbers correspond to those from the /dl -list command.\n\n");
   &$print("  Commands:\n");
-  &$print("    -KILL <dl1> <dl2> ... - Kill the transfers specified.\n\n");
+  &$print("    -KILL <dl1> <dl2> ...  - Kill the transfers specified.\n");
+  &$print("    -LIST                  - List current downloads in progress.\n\n");
 
   return $text;
 }
@@ -2402,9 +2694,40 @@ sub do_send_public
 sub do_browse
 {
   my ($sock, $param_str, @params) = @_;
+  my %opts = ("regex" => 1,
+              "sort" => 1);
 
-  debug_print("Browse", "Requesting from $param_str\n");
-  $sock->send(MSG_BROWSE, $param_str);
+  return if ($#params < 0);
+  my $results = getopts(\%opts, \@params, 1, 1);
+  return if (! defined $results);
+
+  $search_pattern = shift @{ $results->{"regex"} };
+  $search_sort_fields = shift @{ $results->{"sort"} };
+
+  print "Sending browse request to $params[0]...\n";
+
+  debug_print("Browse", "Requesting from $params[0]\n");
+  $sock->send(MSG_BROWSE, $params[0]);
+}
+
+sub do_browse_help
+{
+  my $text = "";
+  my $print = sub { my $i = shift; $text .= "~2;$i~c;"; };
+
+  &$print("Usage: /browse <flags> <user>\n\n");
+  &$print("  Browse files offered by <user>.  Flags include:\n\n");
+  &$print("    -REGEX \"<pattern>\"  - Filter search results according to <pattern>.\n");
+  &$print("    -SORT <sort_fields> - Sort results on specified fields.\n\n");
+  &$print("    Where sort fields are one or more of (case-insensitive):\n\n");
+  &$print("      N      - File name\n");
+  &$print("      U      - User name\n");
+  &$print("      S      - Connection speed\n");
+  &$print("      B      - File bitrate\n");
+  &$print("      F      - File frequency\n\n");
+  &$print("    Note, the sort field order IS significant.\n\n");
+
+  return $text;
 }
 
 sub do_send_whois
@@ -3126,9 +3449,9 @@ sub do_command
 
   if ($text =~ /^\//)
     {
-      eval 'die "DOH!" if (! defined &quotewords("\s+", 1, $text))';
+      my $result = &quotewords("\s+", 1, $text);
 
-      if ($@)
+      if (! defined $result)
         {
           @parts = split(/\s+/, $text);
           $cmd = shift @parts;
@@ -3148,9 +3471,17 @@ sub do_command
     {    
       $cmd = "/send";
       $param_str = $text;
-    }
+    }  
 
   my $func;
+  my @temp_arr;
+
+  foreach (@parts)
+    {
+      push @temp_arr, $_ if (! /^\s*$/);
+    }
+
+  @parts = @temp_arr;
 
   if (ref($command_hash{$cmd}) eq "ARRAY")
     {

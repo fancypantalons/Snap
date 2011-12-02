@@ -8,16 +8,34 @@ use SnapLib::Debug;
 sub new
 {
   my $class = shift;
-  my ($metaserver, $metaport, $ip, $port, $delay) = @_;
+  my ($metaserver, $metaport, $ip, $port, $delay, $socks_ref) = @_;
+  my $self;
 
   if ((! defined $ip) || (! defined $port))
-    { ($ip, $port) = get_best_host($metaserver, $metaport, $delay); }
+    { ($ip, $port) = get_best_host($metaserver, $metaport, $delay, $socks_ref); }
 
-  my $self = $class->SUPER::new(PeerAddr => $ip,
-                                PeerPort => $port,
-				Proto => 'tcp');
+  if (! defined $socks_ref)
+    {      
+      $self = $class->SUPER::new(PeerAddr => $ip,
+                                 PeerPort => $port,
+                                 Proto => 'tcp');
+    }
+  else
+    {
+      $self = $socks_ref->connect(peer_addr => $ip,
+                                  peer_port => $port);
+
+      if (! defined $self)
+        {
+          print "Socks: ", 
+          Net::SOCKS::status_message($socks_ref->param('status_num')),
+          "\n";
+        }
+    }
 
   return undef if (! defined $self);
+
+  bless $self, $class;
 
   ${*$self}{"buffer"} = "";
   ${*$self}{"buflen"} = 0;
@@ -94,18 +112,43 @@ sub get
 
 sub get_best_host
 {
-  my ($metaserver, $metaport, $delay) = @_;
+  my ($metaserver, $metaport, $delay, $socks_ref) = @_;
   my ($host, $port) = (undef, undef);
 
-  print "Getting a host from $metaserver:$metaport...";  
+  print "Getting a host from $metaserver:$metaport..";  
 
   do
     {
       print ".";
 
-      my $napsrv = IO::Socket::INET->new(PeerAddr => $metaserver,
-                                         PeerPort => $metaport,
-                                         Proto => 'tcp');
+      my $napsrv;
+
+      if (! defined $socks_ref)
+        {
+          $napsrv = IO::Socket::INET->new(PeerAddr => $metaserver,
+                                          PeerPort => $metaport,
+                                          Proto => 'tcp');
+        }
+      else
+        {
+          $napsrv = $socks_ref->connect(peer_addr => $metaserver, 
+                                        peer_port => $metaport);
+        }
+
+      if (! defined $napsrv)
+        {
+          print "\nUnable to connect to metaserver!\n";
+
+          if (defined $socks_ref)
+            {
+              print "Socks: ", 
+                    Net::SOCKS::status_message($socks_ref->param('status_num')),
+                    "\n";
+            }
+
+          exit(0);
+        }
+
       my ($data, $len);
       my $sel = new IO::Select($napsrv);
 

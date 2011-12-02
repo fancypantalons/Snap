@@ -4,10 +4,13 @@
 #
 
 my $ENCODE_SUB = sub { return $_[0]; };
+my $VERSION = "0.01";
 
 $ENCODER_LOADED = 1;
 
 push @{ $code_hash{&MSG_INIT} }, \&encode_list;
+
+print "File Encoder Module $VERSION loaded...\n";
 
 sub encode_list
 {

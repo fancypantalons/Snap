@@ -44,30 +44,25 @@ sub redraw
   for ($i = $self->{"top"}; $i < $end; $i++)
     {
       my $line = $self->{"buffer"}->[$i];
-      my $text;
 
       chomp($line);
 
-      while ($line =~ /~(\d{1,2}|c);/)
+      while ($line =~ /(.*?)~(\d{1,2}|c);/gc)
         {
-	  $nextcolour = $1;
-	  $text = $line;
+	  my $text = $1;
+	  my $nextcolour = $2;
 	  
-	  $line =~ s/^.*?~\Q$nextcolour\E;//;
-	  $text =~ s/~\Q$nextcolour;$line\E$//;
-	  
-	  if ($nextcolour eq "c") { $nextcolour = 1; }
+          $nextcolour = 1 if ($nextcolour eq "c");
+          $nextcolour = 15 if ($nextcolour > 15);
 	  
 	  attrset($window, COLOR_PAIR($colour));
 	  addstr($window, $text);
 
 	  $colour = $nextcolour;
-	  
-	  if ($colour > 15) { $colour = 15; }
         }  
 
       attrset($window, COLOR_PAIR($colour)) if (defined $colour);
-      addstr($window, $line);
+      addstr($window, substr($line, pos($line)));
       addstr($window, "\n");
     }
 

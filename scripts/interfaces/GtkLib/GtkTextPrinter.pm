@@ -5,9 +5,10 @@ sub new
   my $class = shift;
   my $self = {};
   my @colours;
+  my @real_colours;
 
   bless $self, $class;
-  $self->{"colours"} = \@colours;  
+  $self->{"colours"} = \@real_colours;
   $self->{"text"} = shift;
   $self->{"window"} = shift;
   $self->{"last_colour"} = 1;
@@ -29,6 +30,14 @@ sub new
   $colours[13] = Gtk::Gdk::Color->parse_color("blue");
   $colours[14] = Gtk::Gdk::Color->parse_color("pink");
   $colours[15] = Gtk::Gdk::Color->parse_color("white");
+
+  my $i;
+
+  foreach (@colours)
+    {
+      push @real_colours,
+           $self->{"text"}->get_colormap->color_alloc($_);
+    }
 
   # Neat little hack so if the RGB database on an X server doesn't
   # have our colours, we just make them grey... ugly?  I think so. :)
@@ -71,28 +80,29 @@ sub insert
 {
   my $self = shift;
   my $line = shift;
-  my ($colour, $nextcolour) = ($self->{"last_colour"}, 0);
-  my $text;
+  my $colour = $self->{"last_colour"};
   my $textbox = $self->{"text"}; 
 
-  while ($line =~ /~(\d{1,2}|c);/)
+  while ($line =~ /(.*?)~(\d{1,2}|c);/gc)
     {
-      $nextcolour = $1;
-      $text = $line;
+      my $text = $1;
+      my $nextcolour = $2;
       
-      $line =~ s/^.*?~\Q$nextcolour\E;//;
-      $text =~ s/~\Q$nextcolour;$line\E$//;
-
-      if ($nextcolour eq "c") { $nextcolour = 1; }
-      
-      $textbox->insert($self->{"font"}, $textbox->get_colormap->color_alloc($self->{"colours"}->[$colour]), undef, $text);
+      $nextcolour = 1 if ($nextcolour eq "c");
+      $nextcolour = 15 if ($nextcolour > 15);
+     
+      $textbox->insert($self->{"font"}, 
+                       $self->{"colours"}->[$colour], 
+                       undef, 
+                       $text);
       
       $colour = $nextcolour;
-      
-      if ($colour > 15) { $colour = 15; }
     } 
 
-  $textbox->insert($self->{"font"}, $textbox->get_colormap->color_alloc($self->{"colours"}->[$colour]), undef, $line);
+  $textbox->insert($self->{"font"}, 
+                   $self->{"colours"}->[$colour], 
+                   undef, 
+                   substr($line, pos($line)));
 
   $self->{"last_colour"} = $colour;
 }

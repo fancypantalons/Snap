@@ -1,3 +1,53 @@
+0.07 to 0.08
+------------
+
+* Added version numbers and load status printout for the encoder scripts.
+
+* Greatly simplified the colour parsing code in the interface scripts...
+  all the things I didn't know about regexp in Perl. :)
+
+* More error reporting... this time on invalid server or metaserver
+  parameters.
+
+* Fixed a bug in command parsing which caused trailing whitespace to be
+  treated significantly.
+
+* Changed /filter to /results, to reflect is more generalized functionality
+  of re-displaying search results with various filters, etc.
+
+* Added a -sort flag to /filter and /search, as per a suggestion from
+  Myers Carpenter.  -sort takes one or more fields, which are used to
+  sort search results.
+
+* Added -sort and -regex flags to the /browse command.
+
+* Changed the way the GTK GUI handles getting search results, so that the
+  aforementioned sorting changes are reflected in the GUI.
+
+* Fixed the COUNT option bug that so many people reported. :)
+
+* Tweaked text parsing so if there are mismatched quotes in input, the
+  code doesn't die() a horrible death. :)  Funny thing is, I don't remember
+  why I did it like that in the first place...
+
+* Modified the command_hash so that strings can be inserted as callbacks,
+  which are evaluated as commands.  What this means is you can do stuff
+  like:
+
+    push @{ $code_hash{&MSG_JOIN_ACK} }, "/send I have arrived!"
+
+  or
+
+    push @{ $code_hash{&MSG_DISCONNECT} }, "/reconnect"
+
+* SOCKSv4 and v5 support added through the use of Net::SOCKS.  Unfortunately,
+  SOCKS-based file transfers currently use blocking connects, which sucks...
+  but, at least it works (I think :).
+
+
+===============================================================================
+
+
 0.06 to 0.07
 ------------
 
